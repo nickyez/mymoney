@@ -41,4 +41,6 @@ ENV EXPENSE_DB=/app/data/transactions.db
 
 EXPOSE 8017
 
+# uvicorn must run from the backend directory so `app:app` resolves
+WORKDIR /app/web/backend
 CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8017"]
