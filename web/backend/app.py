@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from auth import check_csrf, login as do_login, logout as do_logout, require_auth
+from auth import check_csrf, hash_password, login as do_login, logout as do_logout, require_auth
 from db import DB_PATH, connect, init_db, transaction
 
 BASE = Path(__file__).resolve().parent
@@ -34,6 +34,10 @@ app = FastAPI(title="MyMoney API", docs_url=None, redoc_url=None)
 
 class LoginBody(BaseModel):
     password: str = Field(min_length=1, max_length=256)
+
+
+class SetupBody(BaseModel):
+    password: str = Field(min_length=12, max_length=256)
 
 
 class SettingsBody(BaseModel):
@@ -146,8 +150,17 @@ def auth_status(request: Request):
 
 
 @app.post("/api/auth/setup")
-def setup(body: LoginBody, request: Request, response: Response):
-    raise HTTPException(404, "Use the server's local password setup command")
+def setup(body: SetupBody, request: Request):
+    check_csrf(request)
+    if _get_setting("password_hash"):
+        raise HTTPException(409, "Password already configured")
+    with transaction() as db:
+        # Re-check inside the write transaction to avoid a race double-insert.
+        if db.execute("SELECT 1 FROM settings WHERE key='password_hash'").fetchone():
+            raise HTTPException(409, "Password already configured")
+        db.execute("INSERT INTO settings(key,value) VALUES('password_hash',?)",
+                   (hash_password(body.password),))
+    return {"setup_complete": True}
 
 
 @app.post("/api/auth/login")

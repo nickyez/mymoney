@@ -209,7 +209,7 @@ A `Dockerfile` and `docker-compose.yml` are provided for a self-contained instal
 docker compose up -d
 ```
 
-The dashboard is available at `http://localhost:8017`. The email watcher (`daemon`) starts automatically once the `backend` health check passes.
+The dashboard is available at `http://localhost:8017`. On first run the login page shows "Create your password" instead of the sign-in form — no exec or CLI needed.
 
 ### Stop
 
