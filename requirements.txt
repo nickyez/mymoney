@@ -4,3 +4,4 @@ gspread==6.2.1
 google-auth==2.62.1
 pydantic==2.14.3
 python-multipart==0.0.33
+argon2-cffi==25.1.0
