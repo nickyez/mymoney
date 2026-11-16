@@ -194,9 +194,47 @@ A typical deployment runs Uvicorn under systemd bound to loopback and proxies it
 
 After backend or frontend changes, build the frontend, deploy the updated application files, and restart the relevant service. Verify `/api/health`, sign-in, Settings, and both connection checks. For imports, inspect the preview and selected rows before applying. This README does not define a one-size-fits-all deployment script because service names and paths are installation-specific.
 
+## Run with Docker
+
+A `Dockerfile` and `docker-compose.yml` are provided for a self-contained install.
+
+### Prerequisites
+
+- Docker and Docker Compose v2
+- `config.json` and `service_account.json` in the project root (see [Local Setup](#local-setup))
+
+### Start
+
+```bash
+docker compose up -d
+```
+
+The dashboard is available at `http://localhost:8017`. The email watcher (`daemon`) starts automatically once the `backend` health check passes.
+
+### Stop
+
+```bash
+docker compose down
+```
+
+### Rebuild after code changes
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+### Credentials and data
+
+`config.json`, `service_account.json`, and the SQLite database are stored on the host and mounted into the containers. They are never baked into the image.
+
+### Health check
+
+The `backend` service exposes a health endpoint at `http://localhost:8017/api/health`. Docker Compose waits for it to turn healthy before starting the `daemon`.
+
 ## Data and Backups
 
-The default database path is `web/transactions.db`; set `EXPENSE_DB` to use a different path. Back up the database before upgrades or imports. Use SQLite’s backup API or another consistent snapshot method while the database is active. Do not commit database files.
+The default database path is `web/transactions.db`; set `EXPENSE_DB` to use a different path. In Docker, the database lives in the `mymoney-data` volume at `/app/data/transactions.db`. Back up the database before upgrades or imports. Use SQLite’s backup API or another consistent snapshot method while the database is active. Do not commit database files.
 
 ## Troubleshooting
 

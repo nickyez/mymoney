@@ -1,0 +1,53 @@
+# Virtual environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+*.pyc
+.mypy_cache/
+.ruff_cache/
+
+# Node
+web/frontend/node_modules/
+web/frontend/dist/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Credentials and data — never bake these into the image
+config.json
+service_account.json
+token.json
+.env
+*.db
+*.db-shm
+*.db-wal
+seen.db
+failed_emails.log
+
+# Backups and diagnostics
+*.bak
+config.json.bak*
+test_*.txt
+test_mid.txt
+diagnose_*.py
+rebuild_db*.py
+backfill.py
+scripts/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docs and extras (optional — omit to keep image lean)
+# docs/
+# screenshots/
+# *.md
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

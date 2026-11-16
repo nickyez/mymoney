@@ -1,0 +1,39 @@
+services:
+  backend:
+    build: .
+    image: nickyez/mymoney:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8017:8017"
+    volumes:
+      # Keep credentials and database on the host — never inside the image
+      - ./config.json:/app/config.json:ro
+      - ./service_account.json:/app/service_account.json:ro
+      - mymoney-data:/app/data
+    environment:
+      - EXPENSE_DB=/app/data/transactions.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8017/api/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  daemon:
+    build: .
+    image: nickyez/mymoney:latest
+    restart: unless-stopped
+    command: python tracker_daemon.py
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./service_account.json:/app/service_account.json:ro
+      - mymoney-data:/app/data
+    environment:
+      - EXPENSE_DB=/app/data/transactions.db
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mymoney-data:
+    driver: local

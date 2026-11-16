@@ -261,9 +261,10 @@ def db_mark(msg_id):
 def persist_local_transaction(*, date_str, kind, amount, description, category,
                               payment_method, source, message_id, email_link):
     """Persist one parsed email locally before any optional spreadsheet export."""
+    import os
     import sqlite3
     from pathlib import Path
-    db_path = Path("/opt/expense-tracker/web/transactions.db")
+    db_path = Path(os.environ.get("EXPENSE_DB", "/opt/expense-tracker/web/transactions.db"))
     if not db_path.exists():
         log.error("Local transaction DB missing; refusing to mark email processed")
         return False
