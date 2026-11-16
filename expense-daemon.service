@@ -1,0 +1,17 @@
+[Unit]
+Description=Real-time expense tracker — IMAP IDLE daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/expense-tracker
+ExecStart=/opt/expense-tracker/.venv/bin/python /opt/expense-tracker/tracker_daemon.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

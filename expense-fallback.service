@@ -1,0 +1,9 @@
+[Unit]
+Description=Expense tracker fallback sweep (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/expense-tracker
+ExecStart=/opt/expense-tracker/.venv/bin/python /opt/expense-tracker/tracker.py

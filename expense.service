@@ -1,0 +1,11 @@
+[Unit]
+Description=Expense tracker: email -> Google Sheets (one run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/expense-tracker
+ExecStart=/opt/expense-tracker/.venv/bin/python /opt/expense-tracker/tracker.py
+# never let a token refresh race the timer
+RandomizedDelaySec=30

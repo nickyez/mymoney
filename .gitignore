@@ -1,0 +1,24 @@
+config.json
+service_account.json
+token.json
+.env
+.venv/
+web/transactions.db*
+web/frontend/node_modules/
+web/frontend/dist/
+__pycache__/
+*.py[cod]
+failed_emails.log
+seen.db
+transactions.db
+
+
+# local diagnostics and backups (never publish)
+*.bak
+config.json.bak*
+test_*.txt
+test_mid.txt
+diagnose_*.py
+rebuild_db*.py
+backfill.py
+scripts/

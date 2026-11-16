@@ -1,0 +1,12 @@
+[Unit]
+Description=Run expense-fallback.service every 30 minutes (safety net)
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30min
+Unit=expense-fallback.service
+
+[Install]
+WantedBy=timers.target
