@@ -47,7 +47,7 @@ Manual sync is separate from the watcher. It reads Gmail or the `Expenses` sheet
 ## Requirements
 
 - Python 3.11 or newer
-- Node.js and npm
+- Node.js 20.19+ or 22.12+ and npm (Vite 8 requirement)
 - A Gmail account with IMAP enabled and a Gmail app password
 - A Google Cloud service account with the Google Sheets API enabled
 - The target spreadsheet shared with the service account as an Editor
@@ -62,13 +62,15 @@ An entirely blank spreadsheet can be initialized by **Test connection** in Setti
 
 ## Local Setup
 
+Follow the steps below, or see [`docs/AGENT_INSTALL.md`](docs/AGENT_INSTALL.md) for a guided, agent-oriented install tutorial.
+
 Clone the repository, then from its root create and activate a virtual environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install fastapi 'uvicorn[standard]' gspread google-auth pydantic python-multipart
+python -m pip install -r requirements.txt
 ```
 
 Install frontend dependencies and build the app:
@@ -93,6 +95,21 @@ Create `config.json` in the repository root. Keep the real file private and repl
 
 Place the Google service-account key at `service_account.json` in the repository root, then share the spreadsheet with the `client_email` from that key. Never paste or commit the private key.
 
+#### Create the Google Cloud service account
+
+If you do not have a service-account key yet, create one in the Google Cloud Console:
+
+1. Open [Google Cloud Console](https://console.cloud.google.com) → select or create a project.
+2. Go to **APIs & Services → Library** → enable the **Google Sheets API**.
+3. Go to **IAM & Admin → Service Accounts** → **+ Create Service Account**.
+4. Name it (e.g. `mymoney-writer`), click **Create and continue**.
+5. Skip the optional role step and click **Done**.
+6. Click the new service account → **Keys → Add Key → Create new key → JSON** → **Create**. The key downloads automatically. Save it as `service_account.json` in the repository root.
+7. Copy the service account's **email address** (shown on the service account page, format: `name@project.iam.gserviceaccount.com`).
+8. Open your Google Sheet → **Share** → paste the service account email → grant **Editor** access.
+
+
+
 Initialize the dashboard password from a private shell. The utility prompts for a password and refuses to replace one already configured:
 
 ```bash
@@ -108,6 +125,32 @@ cd web/backend
 ```
 
 The API serves the built frontend from `web/frontend/dist`. The email watcher is a separate process and is not started by the command above; review `expense-daemon.service` before running it in a suitable server environment.
+
+#### Verify it works
+
+1. Open `http://127.0.0.1:8017` in a browser — you should see the sign-in page.
+2. Check the health endpoint:
+   ```bash
+   curl http://127.0.0.1:8017/api/health
+   # {"status":"ok"}
+   ```
+3. (Optional) Run the smoke tests to confirm the backend behaves correctly:
+   ```bash
+   cd web/backend
+   ../../.venv/bin/python tests/sync_smoke.py
+   ```
+
+#### Run the email watcher locally (for testing)
+
+The Gmail watcher is a long-running IMAP IDLE process. To try it locally, run it from the repository root in its own process/session:
+
+```bash
+cd /path/to/expense-tracker
+source .venv/bin/activate
+python tracker_daemon.py
+```
+
+It logs to stdout and stays running; Ctrl+C stops it. In production, run it as a systemd service instead (see [Deployment Notes](#deployment-notes)).
 
 ## Settings and Credentials
 
