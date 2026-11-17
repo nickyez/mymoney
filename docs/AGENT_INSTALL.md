@@ -36,8 +36,8 @@ git status               # confirm clean/known working tree
 **Credentials the user must supply before install.** You cannot invent these; ask the user for them:
 
 - **Gmail account** with IMAP enabled and a **Gmail app password** (16-char Google-generated; *not* the normal account password).
-- **Google service-account JSON key** with the Sheets API enabled, saved as `service_account.json`.
-- **Spreadsheet ID** of a Google Sheet shared with the service account as **Editor**.
+- **Optional** — Google service-account JSON key + spreadsheet ID (only for Sheets mirroring). If omitted, the app works in Gmail-only mode: manual tracking and email capture function normally, Sheets sync is unavailable.
+- **Spreadsheet ID** of a Google Sheet shared with the service account as **Editor** (only if Sheets mirroring is desired).
 
 If the user has not set these up, follow the full walkthrough in [`docs/GOOGLE_SETUP.md`](../docs/GOOGLE_SETUP.md) — it covers the Google Cloud account, Sheets API, service account key, Gmail app password, and spreadsheet preparation. The only Cloud API required is the Google Sheets API; the app uses **IMAP** for Gmail, not the Gmail API.
 

@@ -49,8 +49,7 @@ Manual sync is separate from the watcher. It reads Gmail or the `Expenses` sheet
 - Python 3.11 or newer
 - Node.js 20.19+ or 22.12+ and npm (Vite 8 requirement)
 - A Gmail account with IMAP enabled and a Gmail app password
-- A Google Cloud service account with the Google Sheets API enabled
-- The target spreadsheet shared with the service account as an Editor
+- **Optional** — Google Cloud service account + spreadsheet (only for Google Sheets mirroring; manual tracking and Gmail capture work without it)
 
 The expected worksheet is named `Expenses`, with these columns in order:
 
@@ -89,9 +88,11 @@ Create `config.json` in the repository root. Keep the real file private and repl
   "gmail_user": "your-account@gmail.com",
   "gmail_app_password": "your-gmail-app-password",
   "senders": ["bank-notifications@example.com"],
-  "spreadsheet_id": "your-google-spreadsheet-id"
+  "spreadsheet_id": ""
 }
 ```
+
+`spreadsheet_id` is optional — leave it empty to disable Google Sheets mirroring (manual tracking and Gmail capture still work). To enable mirroring, fill it in and also place the service-account key as described below.
 
 Place the Google service-account key at `service_account.json` in the repository root, then share the spreadsheet with the `client_email` from that key. Never paste or commit the private key.
 
@@ -196,7 +197,8 @@ A `Dockerfile` and `docker-compose.yml` are provided for a self-contained instal
 ### Prerequisites
 
 - Docker and Docker Compose v2
-- `config.json` and `service_account.json` in the project root (see [Local Setup](#local-setup))
+- `config.json` in the project root (see [Local Setup](#local-setup))
+- `service_account.json` only if you use Google Sheets mirroring — in Gmail-only mode the key is not needed
 
 ### Start
 
@@ -221,7 +223,7 @@ docker compose up -d
 
 ### Credentials and data
 
-`config.json`, `service_account.json`, and the SQLite database are stored on the host and mounted into the containers. They are never baked into the image.
+`config.json` and the SQLite database are stored on the host and mounted into the containers. They are never baked into the image. To use Google Sheets mirroring, also create `service_account.json` on the host and uncomment the matching mount line in `docker-compose.yml`.
 
 ### Health check
 

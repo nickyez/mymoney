@@ -68,6 +68,9 @@ def get_creds():
 
 
 def get_worksheet():
+    """Return the Expenses worksheet, or None when Sheets mirroring is off."""
+    if not (load_cfg().get("spreadsheet_id") or "").strip():
+        return None
     creds = get_creds()
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(load_cfg()["spreadsheet_id"])
@@ -330,14 +333,17 @@ def process_one(imap_conn, mid, ws):
         log.info("SKIP duplicate local transaction: %s", msg_id[:40])
     else:
         log.info("WROTE SQLite: %s %s Rp %.2f [%s]", date_str, merchant, amount, category)
-        try:
-            ws.append_row(
-                [date_str, source, merchant, str(amount), category, payment, link],
-                value_input_option="USER_ENTERED"
-            )
-            log.info("WROTE Sheets: %s %s Rp %.2f", date_str, merchant, amount)
-        except Exception as sheet_err:
-            log.error("Sheets write failed (SQLite already saved): %s", sheet_err)
+        if ws is not None:
+            try:
+                ws.append_row(
+                    [date_str, source, merchant, str(amount), category, payment, link],
+                    value_input_option="USER_ENTERED"
+                )
+                log.info("WROTE Sheets: %s %s Rp %.2f", date_str, merchant, amount)
+            except Exception as sheet_err:
+                log.error("Sheets write failed (SQLite already saved): %s", sheet_err)
+        else:
+            log.debug("Sheets mirroring off; skipped sheet write for %s", msg_id[:40])
     db_mark(msg_id)
     imap_conn.store(mid, "+FLAGS", "\\Seen")
     return True
@@ -358,41 +364,50 @@ def main():
 
     conn = imap_connect(cfg)
     ws = get_worksheet()
-    log.info("Connected to Gmail and Sheets")
+    if ws is None:
+        log.info("Connected to Gmail (Sheets mirroring off)")
+    else:
+        log.info("Connected to Gmail and Sheets")
 
     idle_count = 0
 
     while True:
         try:
+            # Re-read config each pass so Settings UI edits apply without restart.
+            cfg = load_cfg()
+            sender_list = cfg.get("senders") or []
             # Build search query for all watched senders
             def imap_or(crits):
                 if len(crits) == 1:
                     return crits[0]
                 return "OR %s %s" % (crits[0], imap_or(crits[1:]))
 
-            since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")
-            query = "(SINCE %s %s)" % (
-                since, imap_or(['FROM "%s"' % s for s in sender_list]))
-            typ, data = conn.select("INBOX")
-            if typ != "OK":
-                log.warning("INBOX select failed, reconnecting...")
-                conn = imap_connect(cfg)
-                ws = get_worksheet()
-                continue
+            if sender_list:
+                since = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")
+                query = "(SINCE %s %s)" % (
+                    since, imap_or(['FROM "%s"' % s for s in sender_list]))
+                typ, data = conn.select("INBOX")
+                if typ != "OK":
+                    log.warning("INBOX select failed, reconnecting...")
+                    conn = imap_connect(cfg)
+                    ws = get_worksheet()
+                    continue
 
-            typ, data = conn.search(None, query)
-            current_ids = set(data[0].split()) if typ == "OK" and data[0] else set()
+                typ, data = conn.search(None, query)
+                current_ids = set(data[0].split()) if typ == "OK" and data[0] else set()
 
-            # Process ALL recent mail from watched senders; process_one
-            # skips IDs already in the dedupe DB (works read or unread)
-            if current_ids:
-                log.info("Scanning %d recent email(s) from watched senders", len(current_ids))
-                ws = get_worksheet()
-                for mid in current_ids:
-                    try:
-                        process_one(conn, mid, ws)
-                    except Exception as e:
-                        log.error("process_one error mid=%s: %s", mid, e)
+                # Process ALL recent mail from watched senders; process_one
+                # skips IDs already in the dedupe DB (works read or unread)
+                if current_ids:
+                    log.info("Scanning %d recent email(s) from watched senders", len(current_ids))
+                    ws = get_worksheet()
+                    for mid in current_ids:
+                        try:
+                            process_one(conn, mid, ws)
+                        except Exception as e:
+                            log.error("process_one error mid=%s: %s", mid, e)
+            else:
+                log.warning("No senders configured; skipping scan")
 
             idle_count += 1
             if idle_count % 50 == 0:

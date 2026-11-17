@@ -134,7 +134,8 @@ def append_row(ws, row):
 def main():
     cfg = load_cfg()
     db_init()
-    creds = get_creds()
+    spreadsheet_id = (cfg.get("spreadsheet_id") or "").strip()
+    sheets_on = bool(spreadsheet_id)
     imap = imap_connect(cfg["gmail_user"], cfg["gmail_app_password"])
     imap.select("INBOX", readonly=False)  # readonly=False lets us set \Seen; dedupe is in SQLite
 
@@ -146,13 +147,21 @@ def main():
         imap.logout()
         return
 
-    gs = gspread.authorize(creds)
-    sh = gs.open_by_key(cfg["spreadsheet_id"])
-    try:
-        ws = sh.worksheet(SHEET_TAB)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(SHEET_TAB, rows=100, cols=len(COLUMNS))
-        ws.update(range_name="A1", values=[COLUMNS])
+    creds = get_creds()
+    if sheets_on:
+        gs = gspread.authorize(creds)
+        sh = gs.open_by_key(spreadsheet_id)
+        try:
+            ws = sh.worksheet(SHEET_TAB)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(SHEET_TAB, rows=100, cols=len(COLUMNS))
+            ws.update(range_name="A1", values=[COLUMNS])
+        log.info("Appending parsed emails to Google Sheet")
+    else:
+        ws = None
+        log.info("Sheets mirroring off; parsed emails save to local SQLite only")
+
+    from tracker_daemon import persist_local_transaction
 
     written = 0
     for mid in ids:
@@ -171,11 +180,21 @@ def main():
             log.warning("No amount parsed, logged to %s", FAILED_LOG.name)
         else:
             merchant, amount, category = fields
-            date = email.utils.parsedate_to_datetime(msg.get("Date")).strftime("%Y-%m-%d")
+            date_str = email.utils.parsedate_to_datetime(msg.get("Date")).strftime("%Y-%m-%d")
             link = "https://mail.google.com/mail/u/0/#search/" + urllib.parse.quote("rfc822msgid:" + msg_id)
-            append_row(ws, [date, "livin-mandiri", merchant, amount, category,
-                            "Livin' (Mandiri)", link])
-            log.info("Wrote: %s %s Rp %.0f [%s]", date, merchant, amount, category)
+            kind = "income" if category == "income" else "expense"
+            inserted = persist_local_transaction(
+                date_str=date_str, kind=kind, amount=amount, description=merchant,
+                category=category, payment_method="Livin' (Mandiri)",
+                source="livin-mandiri", message_id=msg_id, email_link=link)
+            if inserted:
+                log.info("WROTE SQLite: %s %s Rp %.0f [%s]", date_str, merchant, amount, category)
+            else:
+                log.info("SKIP duplicate local transaction: %s", msg_id[:40])
+            if ws is not None:
+                append_row(ws, [date_str, "livin-mandiri", merchant, amount, category,
+                               "Livin' (Mandiri)", link])
+                log.info("WROTE Sheets: %s %s Rp %.0f", date_str, merchant, amount)
             written += 1
         db_mark(msg_id)
         imap.store(mid, "+FLAGS", "\\Seen")

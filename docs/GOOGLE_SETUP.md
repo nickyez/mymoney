@@ -1,5 +1,7 @@
 # Google Setup Guide for MyMoney
 
+> **Optional.** This whole guide is only needed if you want Google Sheets mirroring. Manual transaction tracking and Gmail capture work without it — skip this guide entirely until you're ready to add Sheets output.
+
 This guide covers all the **Google-side** preparation you need before installing MyMoney: a Google Cloud Platform account, the Google Sheets API, a service account key, a Gmail app password, and the spreadsheet itself.
 
 **You only need one Cloud API: the Google Sheets API.** MyMoney reads your Gmail over **IMAP** (not the Gmail API), so you do **not** need to enable the Gmail API anywhere.

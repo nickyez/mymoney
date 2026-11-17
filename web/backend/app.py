@@ -43,7 +43,7 @@ class SetupBody(BaseModel):
 class SettingsBody(BaseModel):
     gmail_user: str = Field(min_length=3, max_length=254)
     senders: list[str] = Field(min_length=1, max_length=30)
-    spreadsheet_id: str = Field(min_length=20, max_length=200)
+    spreadsheet_id: str = Field(default="", max_length=200)
     gmail_app_password: str | None = Field(default=None, max_length=256)
 
     @field_validator("gmail_user")
@@ -57,7 +57,7 @@ class SettingsBody(BaseModel):
     @field_validator("senders")
     @classmethod
     def validate_senders(cls, values: list[str]) -> list[str]:
-        cleaned = list(dict.fromkeys(v.strip().lower() for v in values if v.strip()))
+        cleaned = list(dict.fromkeys(v.strip().lower() for v in values if str(v).strip()))
         if not cleaned or any(not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", v) for v in cleaned):
             raise ValueError("Provide at least one valid sender email address")
         return cleaned
@@ -65,7 +65,9 @@ class SettingsBody(BaseModel):
     @field_validator("spreadsheet_id")
     @classmethod
     def validate_spreadsheet_id(cls, value: str) -> str:
-        value = value.strip()
+        value = (value or "").strip()
+        if not value:
+            return ""  # Sheets mirroring is optional
         if not re.fullmatch(r"[A-Za-z0-9_-]{20,200}", value):
             raise ValueError("Invalid Google Spreadsheet ID")
         return value
@@ -185,6 +187,7 @@ def read_settings(_=Depends(_require_auth)):
         "gmail_user": cfg.get("gmail_user", ""),
         "senders": cfg.get("senders", []),
         "spreadsheet_id": cfg.get("spreadsheet_id", ""),
+        "spreadsheet_configured": bool(cfg.get("spreadsheet_id")),
         "gmail_app_password_configured": bool(cfg.get("gmail_app_password")),
         "gmail_app_password_masked": "configured" if cfg.get("gmail_app_password") else "",
         "sheets_auth": "service_account",
@@ -207,14 +210,19 @@ def update_settings(body: SettingsBody, _=Depends(_require_auth)):
     tmp.write_text(json.dumps(cfg, indent=2) + "\n")
     os.chmod(tmp, 0o600)
     tmp.replace(CONFIG_FILE)
-    # Reload mailbox settings promptly; systemd restarts the daemon on failure.
+    # Reload mailbox settings promptly. On hosts without systemd (e.g. Docker)
+    # the daemon either watches config.json live or restarts on next loop, so a
+    # missing systemd is not an error — only a real restart failure is.
+    daemon_restarted = False
     try:
         subprocess.run(["/usr/bin/systemctl", "restart", "expense-daemon.service"],
                        check=True, timeout=20, capture_output=True, text=True)
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise HTTPException(503, "Settings saved, but mailbox watcher restart failed") from exc
+        daemon_restarted = True
+    except (subprocess.SubprocessError, OSError):
+        # unit missing or systemd absent — leave to Docker/relaunch paths
+        pass
     return {"saved": True, "watching": body.senders, "gmail_user": body.gmail_user,
-            "spreadsheet_id": body.spreadsheet_id, "daemon_restarted": True}
+            "spreadsheet_id": body.spreadsheet_id, "daemon_restarted": daemon_restarted}
 
 
 def _service_account_email() -> str | None:
@@ -326,9 +334,12 @@ def gmail_connection(_=Depends(_require_auth)):
 
 def _sheet_services():
     cfg = json.loads(CONFIG_FILE.read_text())
+    spreadsheet_id = (cfg.get("spreadsheet_id") or "").strip()
+    if not spreadsheet_id:
+        raise HTTPException(422, "A Google Spreadsheet ID is not configured")
     client, _ = _sheets_client()
     try:
-        return client.open_by_key(cfg["spreadsheet_id"]).worksheet(SHEET_TAB)
+        return client.open_by_key(spreadsheet_id).worksheet(SHEET_TAB)
     except Exception as exc:
         raise HTTPException(502, "Could not read the configured Google Sheet") from exc
 
