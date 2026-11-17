@@ -95,22 +95,17 @@ Create `config.json` in the repository root. Keep the real file private and repl
 
 Place the Google service-account key at `service_account.json` in the repository root, then share the spreadsheet with the `client_email` from that key. Never paste or commit the private key.
 
-#### Create the Google Cloud service account
+#### Google account, service account, and Gmail app password setup
 
-If you do not have a service-account key yet, create one in the Google Cloud Console:
+Follow [`docs/GOOGLE_SETUP.md`](docs/GOOGLE_SETUP.md) for the full walkthrough: creating the Google Cloud account, enabling the Google Sheets API (the only Cloud API needed — Gmail is accessed over IMAP, not the Gmail API), creating the service account and its JSON key, generating a Gmail app password, and preparing the spreadsheet.
 
-1. Open [Google Cloud Console](https://console.cloud.google.com) → select or create a project.
-2. Go to **APIs & Services → Library** → enable the **Google Sheets API**.
-3. Go to **IAM & Admin → Service Accounts** → **+ Create Service Account**.
-4. Name it (e.g. `mymoney-writer`), click **Create and continue**.
-5. Skip the optional role step and click **Done**.
-6. Click the new service account → **Keys → Add Key → Create new key → JSON** → **Create**. The key downloads automatically. Save it as `service_account.json` in the repository root.
-7. Copy the service account's **email address** (shown on the service account page, format: `name@project.iam.gserviceaccount.com`).
-8. Open your Google Sheet → **Share** → paste the service account email → grant **Editor** access.
+In short, you end up with:
 
+- `service_account.json` in the repository root (Sheets access)
+- A 16-character Gmail app password in `config.json` (email capture)
+- The target spreadsheet shared with the service account as **Editor**
 
-
-Initialize the dashboard password from a private shell. The utility prompts for a password and refuses to replace one already configured:
+Initialize the dashboard password. On **first visit** the app shows a **Create your password** screen — use that. Alternatively (e.g. headless installs), use the CLI utility, which refuses to replace an already-configured password:
 
 ```bash
 cd web/backend

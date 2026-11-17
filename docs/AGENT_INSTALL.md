@@ -39,7 +39,7 @@ git status               # confirm clean/known working tree
 - **Google service-account JSON key** with the Sheets API enabled, saved as `service_account.json`.
 - **Spreadsheet ID** of a Google Sheet shared with the service account as **Editor**.
 
-If the user has not set these up, see §3 step 4 for the service-account creation path, and the README's *Create the Google Cloud service account* subsection.
+If the user has not set these up, follow the full walkthrough in [`docs/GOOGLE_SETUP.md`](../docs/GOOGLE_SETUP.md) — it covers the Google Cloud account, Sheets API, service account key, Gmail app password, and spreadsheet preparation. The only Cloud API required is the Google Sheets API; the app uses **IMAP** for Gmail, not the Gmail API.
 
 ---
 
