@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-17
+
+### Fixed
+
+- Docker: Settings save returned 500 because the backend container mounts
+  `config.json` read-only (`:ro`) while the Settings endpoint rewrites that
+  file. The backend now mounts it writable; the daemon keeps `:ro` since it
+  only reads the file.
+- `PUT /api/settings` now returns a clear 500 message ("Could not write
+  config.json on the server") instead of a generic error when the config
+  file cannot be written.
+
+### To apply
+
+On the deployment host: pull the repo, then `docker compose build && docker compose up -d`
+(so the new compose file's writable mount takes effect).
+
+## [1.2.1] - 2026-11-17
+
+### Fixed
+
+- Restored the `.settings-note` CSS rule that was dropped in 1.2.0, which
+  broke the Settings information/notes badges (plain unstyled text).
+
+
 ## [1.2.0] - 2026-11-17
 
 ### Added

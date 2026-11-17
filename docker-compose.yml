@@ -6,8 +6,10 @@ services:
     ports:
       - "127.0.0.1:8017:8017"
     volumes:
-      # Keep credentials and database on the host — never inside the image
-      - ./config.json:/app/config.json:ro
+      # Credentials and database live on the host, never baked into the image.
+      # The backend rewrites config.json atomically when saving Settings,
+      # so the backend's mount must be writable — no ':ro' here.
+      - ./config.json:/app/config.json
       # Only if you use Google Sheets mirroring (Gmail-only mode does not need it):
       # - ./service_account.json:/app/service_account.json:ro
       - mymoney-data:/app/data
@@ -26,6 +28,7 @@ services:
     restart: unless-stopped
     command: python tracker_daemon.py
     volumes:
+      # The daemon only ever reads config.json, so keep it read-only for it
       - ./config.json:/app/config.json:ro
       # Only if you use Google Sheets mirroring (Gmail-only mode does not need it):
       # - ./service_account.json:/app/service_account.json:ro

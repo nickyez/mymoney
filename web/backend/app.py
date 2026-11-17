@@ -207,9 +207,13 @@ def update_settings(body: SettingsBody, _=Depends(_require_auth)):
     if body.gmail_app_password:
         cfg["gmail_app_password"] = body.gmail_app_password.replace(" ", "")
     tmp = CONFIG_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
-    os.chmod(tmp, 0o600)
-    tmp.replace(CONFIG_FILE)
+    try:
+        tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+        os.chmod(tmp, 0o600)
+        tmp.replace(CONFIG_FILE)
+    except OSError as exc:
+        # e.g. config.json is mounted read-only into the container
+        raise HTTPException(500, f"Could not write config.json on the server: {exc}") from exc
     # Reload mailbox settings promptly. On hosts without systemd (e.g. Docker)
     # the daemon either watches config.json live or restarts on next loop, so a
     # missing systemd is not an error — only a real restart failure is.
