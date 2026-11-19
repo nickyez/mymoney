@@ -129,6 +129,37 @@ def main():
                 imaplib.IMAP4_SSL=original_imap
                 tracker_daemon.extract=original_extract
             original_config_file = app.CONFIG_FILE
+            missing_cfg = Path(tmp) / 'missing-config.json'
+            app.CONFIG_FILE = missing_cfg
+            missing_settings = client.get('/api/settings')
+            assert missing_settings.status_code == 200, missing_settings.text
+            missing_data = missing_settings.json()
+            assert missing_data['gmail_user'] == '' and missing_data['senders'] == []
+            assert missing_data['spreadsheet_id'] == ''
+            assert missing_data['spreadsheet_configured'] is False
+            assert missing_data['gmail_app_password_configured'] is False
+            assert client.post('/api/sheets-connection', json={'spreadsheet_id':''}).status_code == 422
+            missing_gmail = client.get('/api/gmail-connection')
+            assert missing_gmail.status_code == 422, missing_gmail.text
+            missing_sheet_preview = client.post('/api/sheets-sync/preview')
+            assert missing_sheet_preview.status_code == 200, missing_sheet_preview.text
+            assert missing_sheet_preview.json().get('error') or missing_sheet_preview.json().get('errors')
+            missing_gmail_preview = client.post('/api/gmail-sync/preview')
+            assert missing_gmail_preview.status_code == 422, missing_gmail_preview.text
+            first_save = client.put('/api/settings', json={
+                'gmail_user':'first@example.com', 'senders':['notice@example.com'],
+                'spreadsheet_id':'', 'gmail_app_password':None
+            })
+            assert first_save.status_code == 200, first_save.text
+            assert json.loads(missing_cfg.read_text())['gmail_user'] == 'first@example.com'
+            missing_cfg.unlink()
+            missing_cfg.write_text('{broken json')
+            invalid_settings = client.get('/api/settings')
+            assert invalid_settings.status_code == 200, invalid_settings.text
+            assert invalid_settings.json()['gmail_user'] == ''
+            app.CONFIG_FILE = original_config_file
+            print('Missing/invalid config settings recovery checks passed')
+            original_config_file = app.CONFIG_FILE
             original_subprocess_run = app.subprocess.run
             save_cfg = Path(tmp) / 'save-config.json'
             save_cfg.write_text('{"gmail_user":"old@example.com","senders":["old-sender@example.com"],"spreadsheet_id":"fixture-spreadsheet-id-1234567890","gmail_app_password":"old-password","unrelated":"preserve"}')

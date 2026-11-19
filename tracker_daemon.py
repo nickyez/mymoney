@@ -59,7 +59,11 @@ logging.basicConfig(level=logging.INFO,
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 def load_cfg():
-    return json.loads(CONFIG.read_text())
+    try:
+        cfg = json.loads(CONFIG.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
 
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────

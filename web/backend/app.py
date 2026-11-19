@@ -180,9 +180,18 @@ def auth_logout(request: Request, response: Response, _=Depends(_require_auth)):
     return {"authenticated": False}
 
 
+def _read_config() -> dict:
+    """Read config.json, treating missing or malformed files as unconfigured."""
+    try:
+        value = json.loads(CONFIG_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 @app.get("/api/settings")
 def read_settings(_=Depends(_require_auth)):
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     return {
         "gmail_user": cfg.get("gmail_user", ""),
         "senders": cfg.get("senders", []),
@@ -199,7 +208,7 @@ def read_settings(_=Depends(_require_auth)):
 
 @app.put("/api/settings")
 def update_settings(body: SettingsBody, _=Depends(_require_auth)):
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     # Preserve unrelated keys and never return stored credentials in API responses.
     cfg["gmail_user"] = body.gmail_user
     cfg["senders"] = body.senders
@@ -257,7 +266,7 @@ def _sheets_client():
 
 
 def _check_sheets_connection(spreadsheet_id: str | None = None, initialize: bool = True):
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     spreadsheet_id = (spreadsheet_id or cfg.get("spreadsheet_id", "")).strip()
     if not spreadsheet_id:
         raise HTTPException(422, "A Google Spreadsheet ID is not configured")
@@ -303,7 +312,7 @@ def _check_sheets_connection(spreadsheet_id: str | None = None, initialize: bool
 
 def _check_gmail_connection():
     import imaplib
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     if not cfg.get("gmail_user") or not cfg.get("gmail_app_password"):
         raise HTTPException(422, "Gmail account or app password is not configured")
     mailbox = None
@@ -337,7 +346,7 @@ def gmail_connection(_=Depends(_require_auth)):
 
 
 def _sheet_services():
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     spreadsheet_id = (cfg.get("spreadsheet_id") or "").strip()
     if not spreadsheet_id:
         raise HTTPException(422, "A Google Spreadsheet ID is not configured")
@@ -479,7 +488,7 @@ def _preview_gmail_sync(start: date | None = None, end: date | None = None):
     except ImportError as exc:
         raise HTTPException(503, "Gmail sync dependencies are unavailable") from exc
 
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     senders = [str(value).strip().lower() for value in cfg.get("senders", []) if str(value).strip()]
     if not senders:
         raise HTTPException(422, "No Gmail sender addresses are configured")
