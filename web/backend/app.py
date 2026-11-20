@@ -24,7 +24,7 @@ from db import DB_PATH, connect, init_db, transaction
 BASE = Path(__file__).resolve().parent
 WEB = BASE.parent
 ROOT = BASE.parent.parent
-CONFIG_FILE = ROOT / "config.json"
+CONFIG_FILE = Path(os.environ.get("MYMONEY_CONFIG", ROOT / "config.json"))
 SHEET_TAB = "Expenses"
 SHEET_COLUMNS = ["Date", "Source", "Merchant", "Amount", "Category",
                  "Payment Method", "Email Link"]
@@ -152,7 +152,7 @@ def auth_status(request: Request):
 
 
 @app.post("/api/auth/setup")
-def setup(body: SetupBody, request: Request):
+def setup(body: SetupBody, request: Request, response: Response):
     check_csrf(request)
     if _get_setting("password_hash"):
         raise HTTPException(409, "Password already configured")
@@ -160,8 +160,10 @@ def setup(body: SetupBody, request: Request):
         # Re-check inside the write transaction to avoid a race double-insert.
         if db.execute("SELECT 1 FROM settings WHERE key='password_hash'").fetchone():
             raise HTTPException(409, "Password already configured")
+        password_hash = hash_password(body.password)
         db.execute("INSERT INTO settings(key,value) VALUES('password_hash',?)",
-                   (hash_password(body.password),))
+                   (password_hash,))
+    do_login(body.password, password_hash, request.client.host if request.client else "unknown", response)
     return {"setup_complete": True}
 
 
@@ -200,7 +202,7 @@ def read_settings(_=Depends(_require_auth)):
         "gmail_app_password_configured": bool(cfg.get("gmail_app_password")),
         "gmail_app_password_masked": "configured" if cfg.get("gmail_app_password") else "",
         "sheets_auth": "service_account",
-        "sheets_key_configured": (BASE.parent.parent / "service_account.json").is_file(),
+        "sheets_key_configured": (ROOT / "service_account.json").is_file(),
         "service_account_email": _service_account_email(),
         "note": "Use the server-side service account JSON for Sheets access. Private keys are never sent to the browser.",
     }

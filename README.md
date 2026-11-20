@@ -192,21 +192,25 @@ After backend or frontend changes, build the frontend, deploy the updated applic
 
 ## Run with Docker
 
-A `Dockerfile` and `docker-compose.yml` are provided for a self-contained install.
+The dashboard-only Docker install needs Docker and Docker Compose v2; it does not require Gmail credentials or Google Cloud setup.
 
-### Prerequisites
-
-- Docker and Docker Compose v2
-- `config.json` in the project root (see [Local Setup](#local-setup))
-- `service_account.json` only if you use Google Sheets mirroring — in Gmail-only mode the key is not needed
-
-### Start
+### Start the dashboard (manual tracking)
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-The dashboard is available at `http://localhost:8017`. On first run the login page shows "Create your password" instead of the sign-in form — no exec or CLI needed.
+Open `http://localhost:8017`. On first run, create a password. Manual transactions work immediately; Gmail capture and Sheets mirroring can be configured later.
+
+### Optional Gmail capture
+
+Gmail capture is run by a separate watcher. First configure a Gmail account and app password in Settings. For Sheets mirroring, also place `service_account.json` in the project root and share the spreadsheet with its service-account email. Then start the watcher profile:
+
+```bash
+docker compose --profile gmail up -d --build
+```
+
+Do not enable the Gmail profile until the credentials required by the watcher are configured.
 
 ### Stop
 
@@ -223,11 +227,12 @@ docker compose up -d
 
 ### Credentials and data
 
-`config.json` and the SQLite database are stored on the host and mounted into the containers. They are never baked into the image. To use Google Sheets mirroring, also create `service_account.json` on the host and uncomment the matching mount line in `docker-compose.yml`.
+The SQLite database and generated `config.json` are stored in the named `mymoney-data` volume at `/app/data`; they are not baked into the image or stored in the repository checkout. Google service-account credentials are only mounted when using the Gmail profile. Back up the named volume before upgrades or migrations.
 
 ### Health check
 
-The `backend` service exposes a health endpoint at `http://localhost:8017/api/health`. Docker Compose waits for it to turn healthy before starting the `daemon`.
+The backend exposes `http://localhost:8017/api/health`. Compose waits for it to become healthy before starting the optional watcher.
+
 
 ## Data and Backups
 

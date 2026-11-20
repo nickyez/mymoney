@@ -12,6 +12,13 @@ from fastapi.testclient import TestClient
 
 
 def main():
+    compose = (Path(__file__).resolve().parents[3] / 'docker-compose.yml').read_text()
+    assert 'MYMONEY_CONFIG=/app/data/config.json' in compose
+    assert 'mymoney-data:/app/data' in compose
+    assert 'profiles: ["gmail"]' in compose
+    assert './config.json:/app/config.json' not in compose
+    assert './service_account.json:/app/web/backend/service_account.json:ro' in compose
+    print('Clean-install Compose configuration checks passed')
     with tempfile.TemporaryDirectory() as tmp:
         db.DB_PATH = Path(tmp) / "transactions.db"
         app.DB_PATH = db.DB_PATH
@@ -24,7 +31,27 @@ def main():
         try:
             login = client.post('/api/auth/login', json={'password':'not-used-by-test'})
             assert login.status_code in (200, 401), login.text
-            # The auth helper uses a real password hash; override auth on this isolated test app.
+            # First-run password setup should create a session and remain single-use.
+            with db.transaction() as conn:
+                conn.execute("DELETE FROM settings WHERE key='password_hash'")
+            app.app.dependency_overrides.clear()
+            setup_client = TestClient(app.app, base_url='https://testserver')
+            app._get_setting = original_settings
+            saved = setup_client.post('/api/auth/setup', json={'password':'valid-test-password-123'})
+            assert saved.status_code == 200, saved.text
+            assert saved.json()['setup_complete'] is True
+            assert setup_client.get('/api/auth/status').json()['authenticated'] is True
+            app.app.dependency_overrides[app._require_auth] = lambda: None
+            assert setup_client.get('/api/summary?month=2026-11').status_code == 200
+            manual_tx = setup_client.post('/api/transactions', json={
+                'date':'2026-11-19', 'kind':'expense', 'amount':'12000',
+                'description':'First manual transaction', 'category':'food',
+                'payment_method':'Cash', 'notes':''
+            })
+            assert manual_tx.status_code == 201, manual_tx.text
+            duplicate = setup_client.post('/api/auth/setup', json={'password':'another-valid-password-123'})
+            assert duplicate.status_code == 409, duplicate.text
+            print('First-run password setup session check passed')
             app.app.dependency_overrides[app._require_auth] = lambda: True
             rows = [
                 ['Date','Source','Merchant','Amount','Category','Payment Method','Email Link'],
@@ -130,6 +157,8 @@ def main():
                 tracker_daemon.extract=original_extract
             original_config_file = app.CONFIG_FILE
             missing_cfg = Path(tmp) / 'missing-config.json'
+            original_config_env = os.environ.get('MYMONEY_CONFIG')
+            os.environ['MYMONEY_CONFIG'] = str(missing_cfg)
             app.CONFIG_FILE = missing_cfg
             missing_settings = client.get('/api/settings')
             assert missing_settings.status_code == 200, missing_settings.text
@@ -152,12 +181,22 @@ def main():
             })
             assert first_save.status_code == 200, first_save.text
             assert json.loads(missing_cfg.read_text())['gmail_user'] == 'first@example.com'
+            assert missing_cfg.stat().st_mode & 0o777 == 0o600
+            import tracker_daemon
+            original_daemon_config = tracker_daemon.CONFIG
+            tracker_daemon.CONFIG = missing_cfg
+            assert tracker_daemon.load_cfg()['gmail_user'] == 'first@example.com'
+            tracker_daemon.CONFIG = original_daemon_config
             missing_cfg.unlink()
             missing_cfg.write_text('{broken json')
             invalid_settings = client.get('/api/settings')
             assert invalid_settings.status_code == 200, invalid_settings.text
             assert invalid_settings.json()['gmail_user'] == ''
             app.CONFIG_FILE = original_config_file
+            if original_config_env is None:
+                os.environ.pop('MYMONEY_CONFIG', None)
+            else:
+                os.environ['MYMONEY_CONFIG'] = original_config_env
             print('Missing/invalid config settings recovery checks passed')
             original_config_file = app.CONFIG_FILE
             original_subprocess_run = app.subprocess.run

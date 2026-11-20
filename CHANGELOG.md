@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- First-run setup signs the user in immediately after creating a password and
+  explains that manual transaction tracking works without optional integrations.
+- Dashboard first-run notice confirms manual tracking is ready and points users
+  to Settings for optional Gmail capture and Google Sheets mirroring.
+- Settings labels Gmail and Google Sheets as optional integrations.
+
+
 ## [1.2.2] - 2026-11-17
 
 ### Fixed
