@@ -236,7 +236,50 @@ The backend exposes `http://localhost:8017/api/health`. Compose waits for it to 
 
 ## Data and Backups
 
-The default database path is `web/transactions.db`; set `EXPENSE_DB` to use a different path. In Docker, the database lives in the `mymoney-data` volume at `/app/data/transactions.db`. Back up the database before upgrades or imports. Use SQLite’s backup API or another consistent snapshot method while the database is active. Do not commit database files.
+The database and generated `config.json` are stored together in the named `mymoney-data` volume at `/app/data`. They are not baked into the image or kept in the checkout. The archive contains both files and must be treated as sensitive because `config.json` can include Gmail credentials. Restrict access to backups and store a copy away from the server. If Gmail/Sheets are enabled, `service_account.json` is mounted from the project directory and is not included; back it up separately using a secure method.
+
+### Create a Docker backup
+
+Run from the project directory while MyMoney is running; the script reads the volume read-only and creates a consistent SQLite snapshot archive with restrictive permissions:
+
+```bash
+./scripts/backup-docker-volume.sh
+```
+
+By default the archive is written to `./backups/` with mode `600`, and the directory is mode `700`. Choose another protected location if backups should not remain on the same server:
+
+```bash
+./scripts/backup-docker-volume.sh /secure/backup/location
+```
+
+The volume can be selected with `MYMONEY_VOLUME` if you changed its name.
+
+### Restore a Docker backup
+
+Restore replaces the contents of the selected volume. Stop MyMoney first, and keep a separate copy of the current volume before restoring:
+
+```bash
+docker compose --profile gmail down
+./scripts/restore-docker-volume.sh /secure/backup/location/mymoney-mymoney-data-TIMESTAMP.tar.gz --force
+docker compose up -d --build
+```
+
+The restore script validates the archive, config JSON, and SQLite integrity before changing the volume. Without `--force`, it refuses to replace a non-empty volume. After restart, verify `http://localhost:8017/api/health`, sign in, and confirm expected transactions and Settings. If the Gmail profile is used, restore `service_account.json` separately before enabling it.
+
+To restore into a differently named volume, set the same volume variable on both commands, for example `MYMONEY_VOLUME=mymoney-data-copy`.
+
+### Non-Docker installs
+
+For systemd or local installs, back up the configured `EXPENSE_DB` database and `config.json` together. Use SQLite's online backup API or stop the service before copying the database; do not copy only the main `.db` file while SQLite is actively writing. Keep config and credential backups private and do not commit database or backup files.
+
+### Verify the backup workflow
+
+Run the disposable archive round-trip test (does not access Docker or live data):
+
+```bash
+python3 scripts/test-backup-restore.py
+```
+
 
 ## Troubleshooting
 
