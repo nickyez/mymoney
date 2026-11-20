@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mymoney-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    name: Backend smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install httpx pyyaml
+      - run: python web/backend/tests/sync_smoke.py
+      - run: python -m py_compile web/backend/app.py web/backend/auth.py web/backend/db.py tracker.py tracker_daemon.py scripts/ci-clean-install.py scripts/test-backup-restore.py
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+      - run: npm ci --prefix web/frontend
+      - run: npm run build --prefix web/frontend
+
+  backup-restore:
+    name: Backup archive checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: bash -n scripts/backup-docker-volume.sh scripts/restore-docker-volume.sh
+      - run: python scripts/test-backup-restore.py
+
+  clean-install:
+    name: Docker clean install and persistence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run isolated Docker clean-install smoke test
+        run: python scripts/ci-clean-install.py

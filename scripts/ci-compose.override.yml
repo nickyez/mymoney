@@ -1,0 +1,4 @@
+services:
+  backend:
+    ports:
+      - "127.0.0.1:${MYMONEY_CI_PORT:-18017}:8017"

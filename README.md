@@ -281,6 +281,21 @@ python3 scripts/test-backup-restore.py
 ```
 
 
+### Continuous integration
+
+GitHub Actions runs the backend smoke suite, frontend production build, backup archive checks, and a Docker clean-install test on pushes and pull requests. The clean-install job uses a disposable Compose project and volume, creates the first-run password, adds a manual transaction, recreates the container, and confirms the transaction persisted. It does not enable Gmail or contact Google services.
+
+To run the checks locally:
+
+```bash
+python web/backend/tests/sync_smoke.py
+cd web/frontend && npm ci && npm run build
+cd ../..
+bash -n scripts/backup-docker-volume.sh scripts/restore-docker-volume.sh
+python scripts/test-backup-restore.py
+python scripts/ci-clean-install.py  # requires Docker Compose
+```
+
 ## Troubleshooting
 
 - **Settings returns a server error:** check that `config.json` is valid JSON. A settings save must leave a valid JSON file; inspect the API service log for the traceback.
