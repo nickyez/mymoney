@@ -99,9 +99,17 @@ def main():
             conflict=next(item for item in data['items'] if item['status']=='conflict')
             assert conflict['local']['description']=='Changed Cafe' and conflict['local']['amount']==10000, conflict
             key=next(item['key'] for item in data['items'] if item['status']=='new' and item['description']=='Fixture Cafe')
+            with db.transaction() as conn:
+                conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id) VALUES(?,?,?,?,?,?,?,?)",
+                             ('2026-11-01','expense',12000,'Fixture Cafe','food','Cash','sheet-import',key))
             applied=client.post('/api/sheets-sync/apply',json={'preview_token':data['preview_token'],'apply_ids':[key]})
             assert applied.status_code == 200, applied.text
-            assert applied.json()['added'] == 1
+            assert applied.json()['stale_preview'] == 1, applied.json()
+            assert applied.json()['skipped_existing'] == 1, applied.json()
+            assert applied.json()['added'] == 0, applied.json()
+            still_new_key=next(item['key'] for item in data['items'] if item['status']=='new' and item['description']!='Fixture Cafe')
+            mixed=client.post('/api/sheets-sync/apply',json={'preview_token':data['preview_token'],'apply_ids':[still_new_key]})
+            assert mixed.status_code == 200 and mixed.json()['added'] == 1 and mixed.json()['stale_preview'] == 0, mixed.json()
             assert client.post('/api/sheets-sync/apply',json={'preview_token':data['preview_token'],'apply_ids':[key]}).status_code == 409
             print('Sheets preview/apply fixture checks passed')
 
@@ -118,7 +126,8 @@ def main():
                 gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-3@example.test>').replace(b'Cafe', b'Changed Cafe'),
                 gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-4@example.test>').replace(b'Cafe', b'Duplicate Cafe'),
                 gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-4@example.test>').replace(b'Cafe', b'Duplicate Cafe'),
-                b"From: noreply.livin@bankmandiri.co.id\r\nDate: Sun, 01 Nov 2026 10:00:00 +0700\r\nSubject: missing id\r\n\r\nRp 12.000 di Cafe"]
+                b"From: noreply.livin@bankmandiri.co.id\r\nDate: Sun, 01 Nov 2026 10:00:00 +0700\r\nSubject: missing id\r\n\r\nRp 12.000 di Cafe",
+                gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-fresh@example.test>').replace(b'Cafe', b'Fresh Cafe')]
             gmail_results = [
                 ('livin-mandiri','Fixture Cafe',12000,'food'),
                 ('livin-mandiri','Fixture Cafe',12000,'food'),
@@ -126,12 +135,13 @@ def main():
                 ('livin-mandiri','Duplicate Cafe',12000,'food'),
                 ('livin-mandiri','Duplicate Cafe',12000,'food'),
                 ('livin-mandiri','Invalid Cafe',12000,'food'),
+                ('livin-mandiri','Fresh Cafe',12000,'food'),
             ]
             class FakeIMAP:
                 def __init__(self,*args,**kwargs): self.commands=[]
                 def login(self,*args): self.commands.append(('login',args)); return 'OK',[]
                 def select(self,*args,**kwargs): self.commands.append(('select',args,kwargs)); return 'OK',[]
-                def search(self,*args): self.commands.append(('search',args)); return 'OK',[b'1 2 3 4 5 6']
+                def search(self,*args): self.commands.append(('search',args)); return 'OK',[b'1 2 3 4 5 6 7']
                 def fetch(self,sequence,*args):
                     self.commands.append(('fetch',(sequence,*args)))
                     index=int(sequence.decode())
@@ -158,7 +168,7 @@ def main():
                 gmail_preview=client.post('/api/gmail-sync/preview')
                 assert gmail_preview.status_code == 200, gmail_preview.text
                 gmail_data=gmail_preview.json()
-                assert gmail_data['counts'].get('new') == 1, gmail_data['counts']
+                assert gmail_data['counts'].get('new') == 2, gmail_data['counts']
                 assert gmail_data['counts'].get('conflict') == 3, gmail_data['counts']
                 assert gmail_data['counts'].get('duplicate') == 1, gmail_data['counts']
                 assert gmail_data['error_count'] == 1 and gmail_data['errors'][0]['error'] == 'Message-ID missing', gmail_data
@@ -168,10 +178,15 @@ def main():
                 assert gmail_conflict['local']['payment_method']=="Livin' (Mandiri)", gmail_conflict
                 assert any(c[0]=='select' and c[2].get('readonly') is True for c in fake.commands)
                 assert all(c[0] not in ('store','copy','expunge') for c in fake.commands)
+                with db.transaction() as conn:
+                    conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id,email_link) VALUES(?,?,?,?,?,?,?,?,?)",
+                                 ('2026-11-01','expense',12000,'Fixture Cafe','food',"Livin' (Mandiri)",'livin-mandiri','<fixture-gmail-1@example.test>',''))
                 gmail_apply=client.post('/api/gmail-sync/apply',json={'preview_token':gmail_data['preview_token'],'apply_ids':['<fixture-gmail-1@example.test>']})
                 assert gmail_apply.status_code == 200, gmail_apply.text
-                assert gmail_apply.json()['added'] == 1
-                print('Gmail read-only preview/apply fixture checks passed')
+                assert gmail_apply.json()['stale_preview'] == 1 and gmail_apply.json()['stale_ids']==['<fixture-gmail-1@example.test>'] and gmail_apply.json()['added'] == 0, gmail_apply.json()
+                gmail_fresh=client.post('/api/gmail-sync/apply',json={'preview_token':gmail_data['preview_token'],'apply_ids':['<fixture-gmail-fresh@example.test>']})
+                assert gmail_fresh.status_code == 200 and gmail_fresh.json()['added']==1 and gmail_fresh.json()['stale_preview']==0, gmail_fresh.json()
+                print('Gmail stale and fresh apply checks passed')
                 original_imap_for_diagnostics = imaplib.IMAP4_SSL
                 original_extract_for_diagnostics = tracker_daemon.extract
                 class DiagnosticIMAP:

@@ -618,9 +618,16 @@ def apply_gmail_sync(body: GmailSyncBody, _=Depends(_require_auth)):
         candidates = {item["key"]:item for item in preview_items if item["status"] == "new"}
         if not selected or not selected.issubset(candidates):
             raise HTTPException(422, "Select one or more new Gmail rows from this preview")
-        added = skipped = 0
+        added = skipped = stale = 0
+        stale_ids = []
         for key in selected:
             item = candidates[key]
+            exists = db.execute("SELECT 1 FROM transactions WHERE email_message_id=?", (key,)).fetchone()
+            if exists:
+                stale += 1
+                stale_ids.append(key)
+                skipped += 1
+                continue
             cur = db.execute("""INSERT OR IGNORE INTO transactions
                 (date,kind,amount,description,category,payment_method,source,email_message_id,email_link)
                 VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -628,8 +635,9 @@ def apply_gmail_sync(body: GmailSyncBody, _=Depends(_require_auth)):
                  item["payment_method"],item["source"],item["email_message_id"],item["email_link"]))
             added += cur.rowcount
             skipped += 1-cur.rowcount
-        db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
-    return {"added":added,"skipped_existing":skipped,"conflicts_applied":0,"deleted":0}
+        if stale == 0:
+            db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
+    return {"added":added,"skipped_existing":skipped,"stale_preview":stale,"stale_ids":stale_ids,"conflicts_applied":0,"deleted":0}
 
 
 @app.post("/api/sheets-sync/apply")
@@ -644,9 +652,16 @@ def apply_sheets_sync(body: SheetSyncBody, _=Depends(_require_auth)):
         candidates = {item["key"]: item for item in preview_items if item["status"] == "new"}
         if not selected or not selected.issubset(candidates):
             raise HTTPException(422, "Select one or more new rows from this preview")
-        added = skipped = 0
+        added = skipped = stale = 0
+        stale_ids = []
         for key in selected:
             item = candidates[key]
+            exists = db.execute("SELECT 1 FROM transactions WHERE email_message_id=?", (key,)).fetchone()
+            if exists:
+                stale += 1
+                stale_ids.append(key)
+                skipped += 1
+                continue
             cur = db.execute("""INSERT OR IGNORE INTO transactions
                 (date,kind,amount,description,category,payment_method,source,email_message_id,email_link)
                 VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -655,8 +670,10 @@ def apply_sheets_sync(body: SheetSyncBody, _=Depends(_require_auth)):
                  item["email_link"]))
             added += cur.rowcount
             skipped += 1 - cur.rowcount
-        db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
+        if stale == 0:
+            db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
     return {"added": added, "skipped_existing": skipped,
+            "stale_preview": stale, "stale_ids": stale_ids,
             "conflicts_applied": 0, "deleted": 0}
 
 
