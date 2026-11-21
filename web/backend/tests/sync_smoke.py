@@ -171,7 +171,44 @@ def main():
                 gmail_apply=client.post('/api/gmail-sync/apply',json={'preview_token':gmail_data['preview_token'],'apply_ids':['<fixture-gmail-1@example.test>']})
                 assert gmail_apply.status_code == 200, gmail_apply.text
                 assert gmail_apply.json()['added'] == 1
-                print('Gmail read-only preview/apply classification checks passed')
+                print('Gmail read-only preview/apply fixture checks passed')
+                original_imap_for_diagnostics = imaplib.IMAP4_SSL
+                original_extract_for_diagnostics = tracker_daemon.extract
+                class DiagnosticIMAP:
+                    def __init__(self, messages): self.messages=messages; self.commands=[]
+                    def login(self,*args): return 'OK',[]
+                    def select(self,*args,**kwargs): self.commands.append(('select',args,kwargs)); return 'OK',[]
+                    def search(self,*args): return 'OK',[b'1 2']
+                    def fetch(self,sequence,*args): return 'OK',[(b'1 BODY[]',self.messages[int(sequence)-1]),b')']
+                    def logout(self): return 'BYE',[]
+                diagnostic_messages=[
+                    gmail_message.replace(b'Subject: fixture',b'Subject: no amount').replace(b'Rp 12.000 di Cafe',b'Transaction approved'),
+                    gmail_message.replace(b'Message-ID: <fixture-gmail-1@example.test>',b'Message-ID: <fixture-gmail-cancel@example.test>').replace(b'Subject: fixture',b'Subject: cancellation').replace(b'Rp 12.000 di Cafe',b'Transaksi dibatalkan Rp 12.000 di Cafe')]
+                try:
+                    imaplib.IMAP4_SSL=lambda *args,**kwargs: DiagnosticIMAP(diagnostic_messages)
+                    tracker_daemon.extract=original_extract_for_diagnostics
+                    gmail_result_index['value']=0
+                    def diagnostic_extract(sender,body):
+                        if 'dibatalkan' in body.lower(): return None
+                        if 'Rp' not in body: return None
+                        return ('livin-mandiri','Fixture Cafe',12000,'food')
+                    tracker_daemon.extract=diagnostic_extract
+                    with db.transaction() as conn:
+                        conn.execute("DELETE FROM transactions WHERE email_message_id LIKE '<fixture-gmail-%'")
+                    diagnostic_preview=client.post('/api/gmail-sync/preview')
+                    assert diagnostic_preview.status_code == 200, diagnostic_preview.text
+                    diagnostic_errors=diagnostic_preview.json()['errors']
+                    assert diagnostic_preview.json()['error_count']==2, diagnostic_preview.json()
+                    assert diagnostic_errors[0]['subject']=='no amount', diagnostic_errors
+                    assert diagnostic_errors[0]['reason']=='Transaction amount was not found in the message', diagnostic_errors
+                    assert diagnostic_errors[0]['date']=='2026-11-01' and diagnostic_errors[0]['message_id']=='<fixture-gmail-1@example.test>', diagnostic_errors
+                    assert diagnostic_errors[0]['email_link'].startswith('https://mail.google.com/'), diagnostic_errors
+                    assert diagnostic_errors[1]['reason']=='Cancellation or refund notification is skipped', diagnostic_errors
+                    assert 'body' not in json.dumps(diagnostic_errors).lower()
+                    print('Gmail parse diagnostic fixture checks passed')
+                finally:
+                    imaplib.IMAP4_SSL=original_imap_for_diagnostics
+                    tracker_daemon.extract=original_extract_for_diagnostics
                 original_cfg = app.CONFIG_FILE
                 original_sheet_client = app._sheets_client
                 cfg_path = Path(tmp) / 'config.json'

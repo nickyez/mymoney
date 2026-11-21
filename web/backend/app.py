@@ -515,19 +515,32 @@ def _preview_gmail_sync(start: date | None = None, end: date | None = None):
                     continue
                 message = email.message_from_bytes(fetched[0][1])
                 message_id = (message.get("Message-ID") or "").strip()
-                if not message_id:
-                    errors.append({"sender": sender, "error": "Message-ID missing"})
-                    continue
+                import email.header
+                subject = str(email.header.make_header(email.header.decode_header(message.get("Subject", ""))))
                 parsed_date = email.utils.parsedate_to_datetime(message.get("Date", ""))
                 tx_date = parsed_date.date()
                 if start and tx_date < start or end and tx_date > end:
                     continue
-                result = tracker_daemon.extract(sender, tracker_daemon.get_body(message))
+                email_link = ("https://mail.google.com/mail/u/0/#search/" + urllib.parse.quote("rfc822msgid:" + message_id)
+                              if message_id else "")
+                if not message_id:
+                    errors.append({"sender": sender, "subject": subject, "date": tx_date.isoformat(),
+                                   "error": "Message-ID missing", "reason": "Gmail message has no Message-ID"})
+                    continue
+                body = tracker_daemon.get_body(message)
+                if tracker_daemon.CANCEL_RE.search(body):
+                    reason = "Cancellation or refund notification is skipped"
+                elif not tracker_daemon.AMOUNT_RE.search(body):
+                    reason = "Transaction amount was not found in the message"
+                else:
+                    reason = "Message format is not recognized by the transaction parser"
+                result = tracker_daemon.extract(sender, body)
                 if not result:
-                    errors.append({"sender": sender, "message_id": message_id, "error": "Could not parse transaction"})
+                    errors.append({"sender": sender, "message_id": message_id, "subject": subject,
+                                   "date": tx_date.isoformat(), "email_link": email_link,
+                                   "error": "Could not parse transaction", "reason": reason})
                     continue
                 source, description, amount, category = result
-                email_link = "https://mail.google.com/mail/u/0/#search/" + urllib.parse.quote("rfc822msgid:" + message_id)
                 rows.append({"key": message_id, "email_message_id": message_id, "date": tx_date.isoformat(),
                              "kind": "income" if category == "income" else "expense", "amount": str(amount),
                              "description": description, "category": category, "payment_method": source.title(),
