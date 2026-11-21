@@ -27,6 +27,17 @@ def main():
             conn.execute("INSERT INTO settings(key,value) VALUES('password_hash','test-hash')")
         client = TestClient(app.app)
         original_settings = app._get_setting
+        original_config_env = os.environ.get('MYMONEY_CONFIG')
+        original_config_file = app.CONFIG_FILE
+        fixture_cfg = Path(tmp) / 'gmail-config.json'
+        fixture_cfg.write_text(json.dumps({
+            'gmail_user': 'fixture@example.com',
+            'senders': ['noreply.livin@bankmandiri.co.id'],
+            'spreadsheet_id': '',
+            'gmail_app_password': 'fixture-only-secret',
+        }))
+        os.environ['MYMONEY_CONFIG'] = str(fixture_cfg)
+        app.CONFIG_FILE = fixture_cfg
         app._get_setting = lambda key: "test-hash" if key == "password_hash" else original_settings(key)
         try:
             login = client.post('/api/auth/login', json={'password':'not-used-by-test'})
@@ -155,9 +166,9 @@ def main():
             finally:
                 imaplib.IMAP4_SSL=original_imap
                 tracker_daemon.extract=original_extract
+            original_config_env = os.environ.get('MYMONEY_CONFIG')
             original_config_file = app.CONFIG_FILE
             missing_cfg = Path(tmp) / 'missing-config.json'
-            original_config_env = os.environ.get('MYMONEY_CONFIG')
             os.environ['MYMONEY_CONFIG'] = str(missing_cfg)
             app.CONFIG_FILE = missing_cfg
             missing_settings = client.get('/api/settings')
@@ -219,5 +230,10 @@ def main():
             print('Settings save JSON regression check passed')
         finally:
             app._get_setting = original_settings
+            app.CONFIG_FILE = original_config_file
+            if original_config_env is None:
+                os.environ.pop('MYMONEY_CONFIG', None)
+            else:
+                os.environ['MYMONEY_CONFIG'] = original_config_env
 
 if __name__ == '__main__': main()
