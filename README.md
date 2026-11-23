@@ -178,7 +178,8 @@ npm ci
 npm run build
 
 cd ../backend
-../../.venv/bin/python -m py_compile app.py tests/sync_smoke.py
+../../.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+../../.venv/bin/python -m py_compile app.py tests/sync_smoke.py tests/test_transaction_parser.py
 ../../.venv/bin/python tests/sync_smoke.py
 ```
 
@@ -283,12 +284,13 @@ python3 scripts/test-backup-restore.py
 
 ### Continuous integration
 
-GitHub Actions runs the backend smoke suite, frontend production build, backup archive checks, and a Docker clean-install test on pushes and pull requests. The clean-install job uses a disposable Compose project and volume, creates the first-run password, adds a manual transaction, recreates the container, and confirms the transaction persisted. It does not enable Gmail or contact Google services.
+GitHub Actions runs the backend smoke suite, backend unit tests, frontend production build, backup archive checks, and a Docker clean-install test on pushes and pull requests. The clean-install job uses a disposable Compose project and volume, creates the first-run password, adds a manual transaction, recreates the container, and confirms the transaction persisted. It does not enable Gmail or contact Google services.
 
 To run the checks locally:
 
 ```bash
 python web/backend/tests/sync_smoke.py
+python -m unittest discover -s web/backend/tests -p 'test_*.py' -v
 cd web/frontend && npm ci && npm run build
 cd ../..
 bash -n scripts/backup-docker-volume.sh scripts/restore-docker-volume.sh
