@@ -6,14 +6,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-21
+
 ### Added
 
-- First-run setup signs the user in immediately after creating a password and
-  explains that manual transaction tracking works without optional integrations.
-- Dashboard first-run notice confirms manual tracking is ready and points users
-  to Settings for optional Gmail capture and Google Sheets mirroring.
-- Settings labels Gmail and Google Sheets as optional integrations.
+- Clean Docker onboarding with persistent config and database storage, plus an
+  opt-in Gmail watcher profile.
+- Docker volume backup and restore scripts with archive validation and a
+  disposable round-trip test.
+- GitHub Actions checks for backend smoke tests, backend unit tests, frontend
+  builds, backup archives, and clean-install persistence.
+- Backend unit tests for transaction amount parsing, merchant fallback,
+  category detection, cancellation handling, and unsupported senders.
 
+### Changed
+
+- Import reviews now group new, matched, conflicting, duplicate, and invalid
+  rows, and compare incoming transaction details with existing records.
+- Gmail parse errors show subject, date, reason, Message-ID, and an email link;
+  message bodies are not included.
+- Gmail and Sheets apply revalidate selected rows against current transactions.
+  Rows added after preview are skipped and marked stale, while remaining new
+  rows can still be applied.
+- Refined import review controls and feedback styling.
+
+### Fixed
+
+- Backend smoke tests now isolate temporary database and Gmail configuration
+  from host data and credentials.
 
 ## [1.2.2] - 2026-11-17
 
@@ -92,6 +112,10 @@ On the deployment host: pull the repo, then `docker compose build && docker comp
 - Google Sheets integration and preview-first sync flows.
 - Systemd service and fallback timer definitions for long-running deployment.
 
-[unreleased]: https://github.com/nickyez/mymoney/compare/v1.1.0...HEAD
+[unreleased]: https://github.com/nickyez/mymoney/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/nickyez/mymoney/compare/v1.2.2...v1.3.0
+[1.2.2]: https://github.com/nickyez/mymoney/releases/tag/v1.2.2
+[1.2.1]: https://github.com/nickyez/mymoney/releases/tag/v1.2.1
+[1.2.0]: https://github.com/nickyez/mymoney/releases/tag/v1.2.0
 [1.1.0]: https://github.com/nickyez/mymoney/releases/tag/v1.1.0
 [1.0.0]: https://github.com/nickyez/mymoney/releases/tag/v1.0.0
