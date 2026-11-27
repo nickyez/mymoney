@@ -6,6 +6,8 @@
 
 <p align="center">A self-hosted personal finance dashboard with SQLite-backed reporting and preview-first Gmail and Google Sheets imports.</p>
 
+<p align="center"><a href="https://demo.mymoney.kynic.my.id">Try the live demo</a></p>
+
 ## Features
 
 - Monthly income, expenses, net cash flow, category breakdown, and daily spending activity
