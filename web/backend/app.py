@@ -24,7 +24,7 @@ from db import DB_PATH, connect, init_db, transaction
 BASE = Path(__file__).resolve().parent
 WEB = BASE.parent
 ROOT = BASE.parent.parent
-CONFIG_FILE = ROOT / "config.json"
+CONFIG_FILE = Path(os.environ.get("MYMONEY_CONFIG", ROOT / "config.json"))
 SHEET_TAB = "Expenses"
 SHEET_COLUMNS = ["Date", "Source", "Merchant", "Amount", "Category",
                  "Payment Method", "Email Link"]
@@ -152,7 +152,7 @@ def auth_status(request: Request):
 
 
 @app.post("/api/auth/setup")
-def setup(body: SetupBody, request: Request):
+def setup(body: SetupBody, request: Request, response: Response):
     check_csrf(request)
     if _get_setting("password_hash"):
         raise HTTPException(409, "Password already configured")
@@ -160,8 +160,10 @@ def setup(body: SetupBody, request: Request):
         # Re-check inside the write transaction to avoid a race double-insert.
         if db.execute("SELECT 1 FROM settings WHERE key='password_hash'").fetchone():
             raise HTTPException(409, "Password already configured")
+        password_hash = hash_password(body.password)
         db.execute("INSERT INTO settings(key,value) VALUES('password_hash',?)",
-                   (hash_password(body.password),))
+                   (password_hash,))
+    do_login(body.password, password_hash, request.client.host if request.client else "unknown", response)
     return {"setup_complete": True}
 
 
@@ -180,9 +182,18 @@ def auth_logout(request: Request, response: Response, _=Depends(_require_auth)):
     return {"authenticated": False}
 
 
+def _read_config() -> dict:
+    """Read config.json, treating missing or malformed files as unconfigured."""
+    try:
+        value = json.loads(CONFIG_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 @app.get("/api/settings")
 def read_settings(_=Depends(_require_auth)):
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     return {
         "gmail_user": cfg.get("gmail_user", ""),
         "senders": cfg.get("senders", []),
@@ -191,7 +202,7 @@ def read_settings(_=Depends(_require_auth)):
         "gmail_app_password_configured": bool(cfg.get("gmail_app_password")),
         "gmail_app_password_masked": "configured" if cfg.get("gmail_app_password") else "",
         "sheets_auth": "service_account",
-        "sheets_key_configured": (BASE.parent.parent / "service_account.json").is_file(),
+        "sheets_key_configured": (ROOT / "service_account.json").is_file(),
         "service_account_email": _service_account_email(),
         "note": "Use the server-side service account JSON for Sheets access. Private keys are never sent to the browser.",
     }
@@ -199,7 +210,7 @@ def read_settings(_=Depends(_require_auth)):
 
 @app.put("/api/settings")
 def update_settings(body: SettingsBody, _=Depends(_require_auth)):
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     # Preserve unrelated keys and never return stored credentials in API responses.
     cfg["gmail_user"] = body.gmail_user
     cfg["senders"] = body.senders
@@ -257,7 +268,7 @@ def _sheets_client():
 
 
 def _check_sheets_connection(spreadsheet_id: str | None = None, initialize: bool = True):
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     spreadsheet_id = (spreadsheet_id or cfg.get("spreadsheet_id", "")).strip()
     if not spreadsheet_id:
         raise HTTPException(422, "A Google Spreadsheet ID is not configured")
@@ -303,7 +314,7 @@ def _check_sheets_connection(spreadsheet_id: str | None = None, initialize: bool
 
 def _check_gmail_connection():
     import imaplib
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     if not cfg.get("gmail_user") or not cfg.get("gmail_app_password"):
         raise HTTPException(422, "Gmail account or app password is not configured")
     mailbox = None
@@ -337,7 +348,7 @@ def gmail_connection(_=Depends(_require_auth)):
 
 
 def _sheet_services():
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     spreadsheet_id = (cfg.get("spreadsheet_id") or "").strip()
     if not spreadsheet_id:
         raise HTTPException(422, "A Google Spreadsheet ID is not configured")
@@ -479,7 +490,7 @@ def _preview_gmail_sync(start: date | None = None, end: date | None = None):
     except ImportError as exc:
         raise HTTPException(503, "Gmail sync dependencies are unavailable") from exc
 
-    cfg = json.loads(CONFIG_FILE.read_text())
+    cfg = _read_config()
     senders = [str(value).strip().lower() for value in cfg.get("senders", []) if str(value).strip()]
     if not senders:
         raise HTTPException(422, "No Gmail sender addresses are configured")
@@ -504,19 +515,32 @@ def _preview_gmail_sync(start: date | None = None, end: date | None = None):
                     continue
                 message = email.message_from_bytes(fetched[0][1])
                 message_id = (message.get("Message-ID") or "").strip()
-                if not message_id:
-                    errors.append({"sender": sender, "error": "Message-ID missing"})
-                    continue
+                import email.header
+                subject = str(email.header.make_header(email.header.decode_header(message.get("Subject", ""))))
                 parsed_date = email.utils.parsedate_to_datetime(message.get("Date", ""))
                 tx_date = parsed_date.date()
                 if start and tx_date < start or end and tx_date > end:
                     continue
-                result = tracker_daemon.extract(sender, tracker_daemon.get_body(message))
+                email_link = ("https://mail.google.com/mail/u/0/#search/" + urllib.parse.quote("rfc822msgid:" + message_id)
+                              if message_id else "")
+                if not message_id:
+                    errors.append({"sender": sender, "subject": subject, "date": tx_date.isoformat(),
+                                   "error": "Message-ID missing", "reason": "Gmail message has no Message-ID"})
+                    continue
+                body = tracker_daemon.get_body(message)
+                if tracker_daemon.CANCEL_RE.search(body):
+                    reason = "Cancellation or refund notification is skipped"
+                elif not tracker_daemon.AMOUNT_RE.search(body):
+                    reason = "Transaction amount was not found in the message"
+                else:
+                    reason = "Message format is not recognized by the transaction parser"
+                result = tracker_daemon.extract(sender, body)
                 if not result:
-                    errors.append({"sender": sender, "message_id": message_id, "error": "Could not parse transaction"})
+                    errors.append({"sender": sender, "message_id": message_id, "subject": subject,
+                                   "date": tx_date.isoformat(), "email_link": email_link,
+                                   "error": "Could not parse transaction", "reason": reason})
                     continue
                 source, description, amount, category = result
-                email_link = "https://mail.google.com/mail/u/0/#search/" + urllib.parse.quote("rfc822msgid:" + message_id)
                 rows.append({"key": message_id, "email_message_id": message_id, "date": tx_date.isoformat(),
                              "kind": "income" if category == "income" else "expense", "amount": str(amount),
                              "description": description, "category": category, "payment_method": source.title(),
@@ -594,9 +618,16 @@ def apply_gmail_sync(body: GmailSyncBody, _=Depends(_require_auth)):
         candidates = {item["key"]:item for item in preview_items if item["status"] == "new"}
         if not selected or not selected.issubset(candidates):
             raise HTTPException(422, "Select one or more new Gmail rows from this preview")
-        added = skipped = 0
+        added = skipped = stale = 0
+        stale_ids = []
         for key in selected:
             item = candidates[key]
+            exists = db.execute("SELECT 1 FROM transactions WHERE email_message_id=?", (key,)).fetchone()
+            if exists:
+                stale += 1
+                stale_ids.append(key)
+                skipped += 1
+                continue
             cur = db.execute("""INSERT OR IGNORE INTO transactions
                 (date,kind,amount,description,category,payment_method,source,email_message_id,email_link)
                 VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -604,8 +635,9 @@ def apply_gmail_sync(body: GmailSyncBody, _=Depends(_require_auth)):
                  item["payment_method"],item["source"],item["email_message_id"],item["email_link"]))
             added += cur.rowcount
             skipped += 1-cur.rowcount
-        db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
-    return {"added":added,"skipped_existing":skipped,"conflicts_applied":0,"deleted":0}
+        if stale == 0:
+            db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
+    return {"added":added,"skipped_existing":skipped,"stale_preview":stale,"stale_ids":stale_ids,"conflicts_applied":0,"deleted":0}
 
 
 @app.post("/api/sheets-sync/apply")
@@ -620,9 +652,16 @@ def apply_sheets_sync(body: SheetSyncBody, _=Depends(_require_auth)):
         candidates = {item["key"]: item for item in preview_items if item["status"] == "new"}
         if not selected or not selected.issubset(candidates):
             raise HTTPException(422, "Select one or more new rows from this preview")
-        added = skipped = 0
+        added = skipped = stale = 0
+        stale_ids = []
         for key in selected:
             item = candidates[key]
+            exists = db.execute("SELECT 1 FROM transactions WHERE email_message_id=?", (key,)).fetchone()
+            if exists:
+                stale += 1
+                stale_ids.append(key)
+                skipped += 1
+                continue
             cur = db.execute("""INSERT OR IGNORE INTO transactions
                 (date,kind,amount,description,category,payment_method,source,email_message_id,email_link)
                 VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -631,8 +670,10 @@ def apply_sheets_sync(body: SheetSyncBody, _=Depends(_require_auth)):
                  item["email_link"]))
             added += cur.rowcount
             skipped += 1 - cur.rowcount
-        db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
+        if stale == 0:
+            db.execute("DELETE FROM settings WHERE key=?", (preview_key,))
     return {"added": added, "skipped_existing": skipped,
+            "stale_preview": stale, "stale_ids": stale_ids,
             "conflicts_applied": 0, "deleted": 0}
 
 

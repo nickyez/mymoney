@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import hashlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -12,37 +13,103 @@ from fastapi.testclient import TestClient
 
 
 def main():
+    compose = (Path(__file__).resolve().parents[3] / 'docker-compose.yml').read_text()
+    assert 'MYMONEY_CONFIG=/app/data/config.json' in compose
+    assert 'mymoney-data:/app/data' in compose
+    assert 'profiles: ["gmail"]' in compose
+    assert './config.json:/app/config.json' not in compose
+    assert './service_account.json:/app/web/backend/service_account.json:ro' in compose
+    print('Clean-install Compose configuration checks passed')
     with tempfile.TemporaryDirectory() as tmp:
         db.DB_PATH = Path(tmp) / "transactions.db"
         app.DB_PATH = db.DB_PATH
+        import db as app_db
+        app_db.DB_PATH = db.DB_PATH
+        app.connect = app_db.connect
+        app.transaction = app_db.transaction
         db.init_db()
         with db.transaction() as conn:
             conn.execute("INSERT INTO settings(key,value) VALUES('password_hash','test-hash')")
         client = TestClient(app.app)
         original_settings = app._get_setting
+        original_config_env = os.environ.get('MYMONEY_CONFIG')
+        original_config_file = app.CONFIG_FILE
+        fixture_cfg = Path(tmp) / 'gmail-config.json'
+        fixture_cfg.write_text(json.dumps({
+            'gmail_user': 'fixture@example.com',
+            'senders': ['noreply.livin@bankmandiri.co.id'],
+            'spreadsheet_id': '',
+            'gmail_app_password': 'fixture-only-secret',
+        }))
+        os.environ['MYMONEY_CONFIG'] = str(fixture_cfg)
+        app.CONFIG_FILE = fixture_cfg
         app._get_setting = lambda key: "test-hash" if key == "password_hash" else original_settings(key)
         try:
             login = client.post('/api/auth/login', json={'password':'not-used-by-test'})
             assert login.status_code in (200, 401), login.text
-            # The auth helper uses a real password hash; override auth on this isolated test app.
+            # First-run password setup should create a session and remain single-use.
+            with db.transaction() as conn:
+                conn.execute("DELETE FROM settings WHERE key='password_hash'")
+            app.app.dependency_overrides.clear()
+            setup_client = TestClient(app.app, base_url='https://testserver')
+            app._get_setting = original_settings
+            saved = setup_client.post('/api/auth/setup', json={'password':'valid-test-password-123'})
+            assert saved.status_code == 200, saved.text
+            assert saved.json()['setup_complete'] is True
+            assert setup_client.get('/api/auth/status').json()['authenticated'] is True
+            app.app.dependency_overrides[app._require_auth] = lambda: None
+            assert setup_client.get('/api/summary?month=2026-11').status_code == 200
+            manual_tx = setup_client.post('/api/transactions', json={
+                'date':'2026-11-19', 'kind':'expense', 'amount':'12000',
+                'description':'First manual transaction', 'category':'food',
+                'payment_method':'Cash', 'notes':''
+            })
+            assert manual_tx.status_code == 201, manual_tx.text
+            duplicate = setup_client.post('/api/auth/setup', json={'password':'another-valid-password-123'})
+            assert duplicate.status_code == 409, duplicate.text
+            print('First-run password setup session check passed')
             app.app.dependency_overrides[app._require_auth] = lambda: True
             rows = [
                 ['Date','Source','Merchant','Amount','Category','Payment Method','Email Link'],
                 ['2026-11-01','sheet-import','Fixture Cafe','12000','food','Cash',''],
+                ['2026-11-02','sheet-import','Existing Cafe','15000','food','Cash',''],
+                ['2026-11-03','sheet-import','Changed Cafe','18000','food','Cash',''],
+                ['2026-11-04','sheet-import','Duplicate Cafe','9000','food','Cash',''],
+                ['2026-11-04','sheet-import','Duplicate Cafe','9000','food','Cash',''],
                 ['bad-date','sheet-import','Bad Row','oops','food','Cash',''],
             ]
             class Worksheet:
                 def get_all_values(self): return rows
             app._sheet_services = lambda: Worksheet()
+            with db.transaction() as conn:
+                existing_key='sheet:'+hashlib.sha256(json.dumps(['2026-11-02','expense','15000.00','Existing Cafe','food','Cash','sheet-import'],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                conflict_key='sheet:'+hashlib.sha256(json.dumps(['2026-11-03','expense','18000.00','Changed Cafe','food','Cash','sheet-import'],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id) VALUES(?,?,?,?,?,?,?,?)",
+                             ('2026-11-02','expense',15000,'Existing Cafe','food','Cash','sheet-import',existing_key))
+                conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id) VALUES(?,?,?,?,?,?,?,?)",
+                             ('2026-11-03','expense',10000,'Changed Cafe','food','Cash','sheet-import',conflict_key))
             preview = client.post('/api/sheets-sync/preview')
             assert preview.status_code == 200, preview.text
             data=preview.json()
-            assert data['counts'].get('new') == 1, data
-            assert data['error_count'] == 1, data
-            key=data['items'][0]['key']
+            assert data['counts'].get('new') == 2, data['counts']
+            assert data['counts'].get('matched') == 1, data['counts']
+            assert data['counts'].get('conflict') == 1, data['counts']
+            assert data['counts'].get('duplicate') == 1, data['counts']
+            assert data['error_count'] == 1 and data['errors'][0]['row_number'] == 7, data
+            conflict=next(item for item in data['items'] if item['status']=='conflict')
+            assert conflict['local']['description']=='Changed Cafe' and conflict['local']['amount']==10000, conflict
+            key=next(item['key'] for item in data['items'] if item['status']=='new' and item['description']=='Fixture Cafe')
+            with db.transaction() as conn:
+                conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id) VALUES(?,?,?,?,?,?,?,?)",
+                             ('2026-11-01','expense',12000,'Fixture Cafe','food','Cash','sheet-import',key))
             applied=client.post('/api/sheets-sync/apply',json={'preview_token':data['preview_token'],'apply_ids':[key]})
             assert applied.status_code == 200, applied.text
-            assert applied.json()['added'] == 1
+            assert applied.json()['stale_preview'] == 1, applied.json()
+            assert applied.json()['skipped_existing'] == 1, applied.json()
+            assert applied.json()['added'] == 0, applied.json()
+            still_new_key=next(item['key'] for item in data['items'] if item['status']=='new' and item['description']!='Fixture Cafe')
+            mixed=client.post('/api/sheets-sync/apply',json={'preview_token':data['preview_token'],'apply_ids':[still_new_key]})
+            assert mixed.status_code == 200 and mixed.json()['added'] == 1 and mixed.json()['stale_preview'] == 0, mixed.json()
             assert client.post('/api/sheets-sync/apply',json={'preview_token':data['preview_token'],'apply_ids':[key]}).status_code == 409
             print('Sheets preview/apply fixture checks passed')
 
@@ -54,30 +121,109 @@ def main():
                              b"Message-ID: <fixture-gmail-1@example.test>\r\n"
                              b"Date: Sun, 01 Nov 2026 10:00:00 +0700\r\n"
                              b"Subject: fixture\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nRp 12.000 di Cafe")
+            gmail_messages = [gmail_message,
+                gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-2@example.test>').replace(b'Cafe', b'Fixture Cafe'),
+                gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-3@example.test>').replace(b'Cafe', b'Changed Cafe'),
+                gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-4@example.test>').replace(b'Cafe', b'Duplicate Cafe'),
+                gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-4@example.test>').replace(b'Cafe', b'Duplicate Cafe'),
+                b"From: noreply.livin@bankmandiri.co.id\r\nDate: Sun, 01 Nov 2026 10:00:00 +0700\r\nSubject: missing id\r\n\r\nRp 12.000 di Cafe",
+                gmail_message.replace(b'<fixture-gmail-1@example.test>', b'<fixture-gmail-fresh@example.test>').replace(b'Cafe', b'Fresh Cafe')]
+            gmail_results = [
+                ('livin-mandiri','Fixture Cafe',12000,'food'),
+                ('livin-mandiri','Fixture Cafe',12000,'food'),
+                ('livin-mandiri','Changed Cafe',12000,'food'),
+                ('livin-mandiri','Duplicate Cafe',12000,'food'),
+                ('livin-mandiri','Duplicate Cafe',12000,'food'),
+                ('livin-mandiri','Invalid Cafe',12000,'food'),
+                ('livin-mandiri','Fresh Cafe',12000,'food'),
+            ]
             class FakeIMAP:
                 def __init__(self,*args,**kwargs): self.commands=[]
                 def login(self,*args): self.commands.append(('login',args)); return 'OK',[]
                 def select(self,*args,**kwargs): self.commands.append(('select',args,kwargs)); return 'OK',[]
-                def search(self,*args): self.commands.append(('search',args)); return 'OK',[b'1']
-                def fetch(self,*args): self.commands.append(('fetch',args)); return 'OK',[(b'1 BODY[]',gmail_message),b')']
+                def search(self,*args): self.commands.append(('search',args)); return 'OK',[b'1 2 3 4 5 6 7']
+                def fetch(self,sequence,*args):
+                    self.commands.append(('fetch',(sequence,*args)))
+                    index=int(sequence.decode())
+                    return 'OK',[(b'1 BODY[]',gmail_messages[index-1]),b')']
                 def logout(self): self.commands.append(('logout',)); return 'BYE',[]
             fake=FakeIMAP()
+            gmail_result_index = {'value': 0}
             original_imap=imaplib.IMAP4_SSL
             original_extract=tracker_daemon.extract
             imaplib.IMAP4_SSL=lambda *args,**kwargs: fake
-            tracker_daemon.extract=lambda sender,body: ('livin-mandiri','Fixture Cafe',12000,'food')
+            def fake_extract(sender,body):
+                result=gmail_results[gmail_result_index['value']]
+                gmail_result_index['value']+=1
+                return result
+            tracker_daemon.extract=fake_extract
             try:
+                with db.transaction() as conn:
+                    conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id) VALUES(?,?,?,?,?,?,?,?)",
+                                 ('2026-11-01','expense',12000,'Fixture Cafe','food',"Livin' (Mandiri)",'livin-mandiri','<fixture-gmail-2@example.test>'))
+                    conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id) VALUES(?,?,?,?,?,?,?,?)",
+                                 ('2026-11-01','expense',12000,'Changed Cafe','food',"Livin' (Mandiri)",'livin-mandiri','<fixture-gmail-3@example.test>'))
+                    conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id) VALUES(?,?,?,?,?,?,?,?)",
+                                 ('2026-11-01','expense',12000,'Duplicate Cafe','food',"Livin' (Mandiri)",'livin-mandiri','<fixture-gmail-4@example.test>'))
                 gmail_preview=client.post('/api/gmail-sync/preview')
                 assert gmail_preview.status_code == 200, gmail_preview.text
                 gmail_data=gmail_preview.json()
-                assert gmail_data['counts'].get('new') == 1, gmail_data
+                assert gmail_data['counts'].get('new') == 2, gmail_data['counts']
+                assert gmail_data['counts'].get('conflict') == 3, gmail_data['counts']
+                assert gmail_data['counts'].get('duplicate') == 1, gmail_data['counts']
+                assert gmail_data['error_count'] == 1 and gmail_data['errors'][0]['error'] == 'Message-ID missing', gmail_data
                 assert gmail_data['items'][0]['email_message_id']=='<fixture-gmail-1@example.test>'
+                gmail_conflict=next(item for item in gmail_data['items'] if item['status']=='conflict')
+                assert gmail_conflict['local']['description']=='Fixture Cafe', gmail_conflict
+                assert gmail_conflict['local']['payment_method']=="Livin' (Mandiri)", gmail_conflict
                 assert any(c[0]=='select' and c[2].get('readonly') is True for c in fake.commands)
                 assert all(c[0] not in ('store','copy','expunge') for c in fake.commands)
+                with db.transaction() as conn:
+                    conn.execute("INSERT INTO transactions(date,kind,amount,description,category,payment_method,source,email_message_id,email_link) VALUES(?,?,?,?,?,?,?,?,?)",
+                                 ('2026-11-01','expense',12000,'Fixture Cafe','food',"Livin' (Mandiri)",'livin-mandiri','<fixture-gmail-1@example.test>',''))
                 gmail_apply=client.post('/api/gmail-sync/apply',json={'preview_token':gmail_data['preview_token'],'apply_ids':['<fixture-gmail-1@example.test>']})
                 assert gmail_apply.status_code == 200, gmail_apply.text
-                assert gmail_apply.json()['added'] == 1
-                print('Gmail read-only preview/apply fixture checks passed')
+                assert gmail_apply.json()['stale_preview'] == 1 and gmail_apply.json()['stale_ids']==['<fixture-gmail-1@example.test>'] and gmail_apply.json()['added'] == 0, gmail_apply.json()
+                gmail_fresh=client.post('/api/gmail-sync/apply',json={'preview_token':gmail_data['preview_token'],'apply_ids':['<fixture-gmail-fresh@example.test>']})
+                assert gmail_fresh.status_code == 200 and gmail_fresh.json()['added']==1 and gmail_fresh.json()['stale_preview']==0, gmail_fresh.json()
+                print('Gmail stale and fresh apply checks passed')
+                original_imap_for_diagnostics = imaplib.IMAP4_SSL
+                original_extract_for_diagnostics = tracker_daemon.extract
+                class DiagnosticIMAP:
+                    def __init__(self, messages): self.messages=messages; self.commands=[]
+                    def login(self,*args): return 'OK',[]
+                    def select(self,*args,**kwargs): self.commands.append(('select',args,kwargs)); return 'OK',[]
+                    def search(self,*args): return 'OK',[b'1 2']
+                    def fetch(self,sequence,*args): return 'OK',[(b'1 BODY[]',self.messages[int(sequence)-1]),b')']
+                    def logout(self): return 'BYE',[]
+                diagnostic_messages=[
+                    gmail_message.replace(b'Subject: fixture',b'Subject: no amount').replace(b'Rp 12.000 di Cafe',b'Transaction approved'),
+                    gmail_message.replace(b'Message-ID: <fixture-gmail-1@example.test>',b'Message-ID: <fixture-gmail-cancel@example.test>').replace(b'Subject: fixture',b'Subject: cancellation').replace(b'Rp 12.000 di Cafe',b'Transaksi dibatalkan Rp 12.000 di Cafe')]
+                try:
+                    imaplib.IMAP4_SSL=lambda *args,**kwargs: DiagnosticIMAP(diagnostic_messages)
+                    tracker_daemon.extract=original_extract_for_diagnostics
+                    gmail_result_index['value']=0
+                    def diagnostic_extract(sender,body):
+                        if 'dibatalkan' in body.lower(): return None
+                        if 'Rp' not in body: return None
+                        return ('livin-mandiri','Fixture Cafe',12000,'food')
+                    tracker_daemon.extract=diagnostic_extract
+                    with db.transaction() as conn:
+                        conn.execute("DELETE FROM transactions WHERE email_message_id LIKE '<fixture-gmail-%'")
+                    diagnostic_preview=client.post('/api/gmail-sync/preview')
+                    assert diagnostic_preview.status_code == 200, diagnostic_preview.text
+                    diagnostic_errors=diagnostic_preview.json()['errors']
+                    assert diagnostic_preview.json()['error_count']==2, diagnostic_preview.json()
+                    assert diagnostic_errors[0]['subject']=='no amount', diagnostic_errors
+                    assert diagnostic_errors[0]['reason']=='Transaction amount was not found in the message', diagnostic_errors
+                    assert diagnostic_errors[0]['date']=='2026-11-01' and diagnostic_errors[0]['message_id']=='<fixture-gmail-1@example.test>', diagnostic_errors
+                    assert diagnostic_errors[0]['email_link'].startswith('https://mail.google.com/'), diagnostic_errors
+                    assert diagnostic_errors[1]['reason']=='Cancellation or refund notification is skipped', diagnostic_errors
+                    assert 'body' not in json.dumps(diagnostic_errors).lower()
+                    print('Gmail parse diagnostic fixture checks passed')
+                finally:
+                    imaplib.IMAP4_SSL=original_imap_for_diagnostics
+                    tracker_daemon.extract=original_extract_for_diagnostics
                 original_cfg = app.CONFIG_FILE
                 original_sheet_client = app._sheets_client
                 cfg_path = Path(tmp) / 'config.json'
@@ -128,6 +274,49 @@ def main():
             finally:
                 imaplib.IMAP4_SSL=original_imap
                 tracker_daemon.extract=original_extract
+            original_config_env = os.environ.get('MYMONEY_CONFIG')
+            original_config_file = app.CONFIG_FILE
+            missing_cfg = Path(tmp) / 'missing-config.json'
+            os.environ['MYMONEY_CONFIG'] = str(missing_cfg)
+            app.CONFIG_FILE = missing_cfg
+            missing_settings = client.get('/api/settings')
+            assert missing_settings.status_code == 200, missing_settings.text
+            missing_data = missing_settings.json()
+            assert missing_data['gmail_user'] == '' and missing_data['senders'] == []
+            assert missing_data['spreadsheet_id'] == ''
+            assert missing_data['spreadsheet_configured'] is False
+            assert missing_data['gmail_app_password_configured'] is False
+            assert client.post('/api/sheets-connection', json={'spreadsheet_id':''}).status_code == 422
+            missing_gmail = client.get('/api/gmail-connection')
+            assert missing_gmail.status_code == 422, missing_gmail.text
+            missing_sheet_preview = client.post('/api/sheets-sync/preview')
+            assert missing_sheet_preview.status_code == 200, missing_sheet_preview.text
+            assert missing_sheet_preview.json().get('error') or missing_sheet_preview.json().get('errors')
+            missing_gmail_preview = client.post('/api/gmail-sync/preview')
+            assert missing_gmail_preview.status_code == 422, missing_gmail_preview.text
+            first_save = client.put('/api/settings', json={
+                'gmail_user':'first@example.com', 'senders':['notice@example.com'],
+                'spreadsheet_id':'', 'gmail_app_password':None
+            })
+            assert first_save.status_code == 200, first_save.text
+            assert json.loads(missing_cfg.read_text())['gmail_user'] == 'first@example.com'
+            assert missing_cfg.stat().st_mode & 0o777 == 0o600
+            import tracker_daemon
+            original_daemon_config = tracker_daemon.CONFIG
+            tracker_daemon.CONFIG = missing_cfg
+            assert tracker_daemon.load_cfg()['gmail_user'] == 'first@example.com'
+            tracker_daemon.CONFIG = original_daemon_config
+            missing_cfg.unlink()
+            missing_cfg.write_text('{broken json')
+            invalid_settings = client.get('/api/settings')
+            assert invalid_settings.status_code == 200, invalid_settings.text
+            assert invalid_settings.json()['gmail_user'] == ''
+            app.CONFIG_FILE = original_config_file
+            if original_config_env is None:
+                os.environ.pop('MYMONEY_CONFIG', None)
+            else:
+                os.environ['MYMONEY_CONFIG'] = original_config_env
+            print('Missing/invalid config settings recovery checks passed')
             original_config_file = app.CONFIG_FILE
             original_subprocess_run = app.subprocess.run
             save_cfg = Path(tmp) / 'save-config.json'
@@ -149,5 +338,10 @@ def main():
             print('Settings save JSON regression check passed')
         finally:
             app._get_setting = original_settings
+            app.CONFIG_FILE = original_config_file
+            if original_config_env is None:
+                os.environ.pop('MYMONEY_CONFIG', None)
+            else:
+                os.environ['MYMONEY_CONFIG'] = original_config_env
 
 if __name__ == '__main__': main()

@@ -8,6 +8,7 @@ Fallback timer: expense-fallback.timer (every 30 min, safety net if daemon dies)
 import imaplib
 import json
 import logging
+import os
 import re
 import sqlite3
 import email
@@ -20,7 +21,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 BASE = Path(__file__).resolve().parent
-CONFIG = BASE / "config.json"
+CONFIG = Path(os.environ.get("MYMONEY_CONFIG", BASE / "config.json"))
 SA_KEY = BASE / "service_account.json"
 DB = BASE / "seen.db"
 FAILED_LOG = BASE / "failed_emails.log"
@@ -59,7 +60,11 @@ logging.basicConfig(level=logging.INFO,
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 def load_cfg():
-    return json.loads(CONFIG.read_text())
+    try:
+        cfg = json.loads(CONFIG.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
 
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────

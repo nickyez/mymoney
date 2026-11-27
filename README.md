@@ -178,7 +178,8 @@ npm ci
 npm run build
 
 cd ../backend
-../../.venv/bin/python -m py_compile app.py tests/sync_smoke.py
+../../.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+../../.venv/bin/python -m py_compile app.py tests/sync_smoke.py tests/test_transaction_parser.py
 ../../.venv/bin/python tests/sync_smoke.py
 ```
 
@@ -192,21 +193,25 @@ After backend or frontend changes, build the frontend, deploy the updated applic
 
 ## Run with Docker
 
-A `Dockerfile` and `docker-compose.yml` are provided for a self-contained install.
+The dashboard-only Docker install needs Docker and Docker Compose v2; it does not require Gmail credentials or Google Cloud setup.
 
-### Prerequisites
-
-- Docker and Docker Compose v2
-- `config.json` in the project root (see [Local Setup](#local-setup))
-- `service_account.json` only if you use Google Sheets mirroring — in Gmail-only mode the key is not needed
-
-### Start
+### Start the dashboard (manual tracking)
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-The dashboard is available at `http://localhost:8017`. On first run the login page shows "Create your password" instead of the sign-in form — no exec or CLI needed.
+Open `http://localhost:8017`. On first run, create a password. Manual transactions work immediately; Gmail capture and Sheets mirroring can be configured later.
+
+### Optional Gmail capture
+
+Gmail capture is run by a separate watcher. First configure a Gmail account and app password in Settings. For Sheets mirroring, also place `service_account.json` in the project root and share the spreadsheet with its service-account email. Then start the watcher profile:
+
+```bash
+docker compose --profile gmail up -d --build
+```
+
+Do not enable the Gmail profile until the credentials required by the watcher are configured.
 
 ### Stop
 
@@ -223,15 +228,75 @@ docker compose up -d
 
 ### Credentials and data
 
-`config.json` and the SQLite database are stored on the host and mounted into the containers. They are never baked into the image. To use Google Sheets mirroring, also create `service_account.json` on the host and uncomment the matching mount line in `docker-compose.yml`.
+The SQLite database and generated `config.json` are stored in the named `mymoney-data` volume at `/app/data`; they are not baked into the image or stored in the repository checkout. Google service-account credentials are only mounted when using the Gmail profile. Back up the named volume before upgrades or migrations.
 
 ### Health check
 
-The `backend` service exposes a health endpoint at `http://localhost:8017/api/health`. Docker Compose waits for it to turn healthy before starting the `daemon`.
+The backend exposes `http://localhost:8017/api/health`. Compose waits for it to become healthy before starting the optional watcher.
+
 
 ## Data and Backups
 
-The default database path is `web/transactions.db`; set `EXPENSE_DB` to use a different path. In Docker, the database lives in the `mymoney-data` volume at `/app/data/transactions.db`. Back up the database before upgrades or imports. Use SQLite’s backup API or another consistent snapshot method while the database is active. Do not commit database files.
+The database and generated `config.json` are stored together in the named `mymoney-data` volume at `/app/data`. They are not baked into the image or kept in the checkout. The archive contains both files and must be treated as sensitive because `config.json` can include Gmail credentials. Restrict access to backups and store a copy away from the server. If Gmail/Sheets are enabled, `service_account.json` is mounted from the project directory and is not included; back it up separately using a secure method.
+
+### Create a Docker backup
+
+Run from the project directory while MyMoney is running; the script reads the volume read-only and creates a consistent SQLite snapshot archive with restrictive permissions:
+
+```bash
+./scripts/backup-docker-volume.sh
+```
+
+By default the archive is written to `./backups/` with mode `600`, and the directory is mode `700`. Choose another protected location if backups should not remain on the same server:
+
+```bash
+./scripts/backup-docker-volume.sh /secure/backup/location
+```
+
+The volume can be selected with `MYMONEY_VOLUME` if you changed its name.
+
+### Restore a Docker backup
+
+Restore replaces the contents of the selected volume. Stop MyMoney first, and keep a separate copy of the current volume before restoring:
+
+```bash
+docker compose --profile gmail down
+./scripts/restore-docker-volume.sh /secure/backup/location/mymoney-mymoney-data-TIMESTAMP.tar.gz --force
+docker compose up -d --build
+```
+
+The restore script validates the archive, config JSON, and SQLite integrity before changing the volume. Without `--force`, it refuses to replace a non-empty volume. After restart, verify `http://localhost:8017/api/health`, sign in, and confirm expected transactions and Settings. If the Gmail profile is used, restore `service_account.json` separately before enabling it.
+
+To restore into a differently named volume, set the same volume variable on both commands, for example `MYMONEY_VOLUME=mymoney-data-copy`.
+
+### Non-Docker installs
+
+For systemd or local installs, back up the configured `EXPENSE_DB` database and `config.json` together. Use SQLite's online backup API or stop the service before copying the database; do not copy only the main `.db` file while SQLite is actively writing. Keep config and credential backups private and do not commit database or backup files.
+
+### Verify the backup workflow
+
+Run the disposable archive round-trip test (does not access Docker or live data):
+
+```bash
+python3 scripts/test-backup-restore.py
+```
+
+
+### Continuous integration
+
+GitHub Actions runs the backend smoke suite, backend unit tests, frontend production build, backup archive checks, and a Docker clean-install test on pushes and pull requests. The clean-install job uses a disposable Compose project and volume, creates the first-run password, adds a manual transaction, recreates the container, and confirms the transaction persisted. It does not enable Gmail or contact Google services.
+
+To run the checks locally:
+
+```bash
+python web/backend/tests/sync_smoke.py
+python -m unittest discover -s web/backend/tests -p 'test_*.py' -v
+cd web/frontend && npm ci && npm run build
+cd ../..
+bash -n scripts/backup-docker-volume.sh scripts/restore-docker-volume.sh
+python scripts/test-backup-restore.py
+python scripts/ci-clean-install.py  # requires Docker Compose
+```
 
 ## Troubleshooting
 
